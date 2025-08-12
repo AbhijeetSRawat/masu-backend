@@ -37,7 +37,7 @@ connectDB(); // Connect to database
 app.use(cookieParser()); // For parsing cookies
 
 // Allow multiple origins
-const allowedOrigins = ['http://localhost:5173','https://masu-consultancy-ebon.vercel.app']
+const allowedOrigins = ['http://localhost:5173','https://masu-frontend.vercel.app']
 
 app.use(cors({origin: allowedOrigins, credentials: true}));
 //file-upload
