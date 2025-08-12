@@ -853,7 +853,7 @@ export const getAllEmployeesByCompanyIdPagination = async (req, res) => {
       .lean();
 
     // Filter null users BEFORE counting to keep counts accurate
-    // const filteredEmployees = employees.filter(emp => emp.user);
+     const filteredEmployees = employees.filter(emp => emp.user);
 
     // Accurate total count with same condition
     const total = await Employee.countDocuments({
