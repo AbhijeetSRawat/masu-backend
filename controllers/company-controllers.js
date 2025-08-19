@@ -77,7 +77,7 @@ try {
       website,
       contactEmail,
       contactPhone,
-      thumbnail:documentUrl.secure_url,
+      thumbnail:documentUrl.result.secure_url,
       address: { street, city, state, pincode },
       companyId: newCompanyId,
       taxDetails: {

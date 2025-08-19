@@ -15,7 +15,7 @@ import fileUpload from 'express-fileupload';
 import cloudinaryConnect from './config/cloudinary.js';
 import reimbursementCategoryRoutes from './routes/reimbursement-category-routes.js';
 import tableStructureRoutes from './routes/table-structure-routes.js';
-
+ import leavePolicyRoutes  from './routes/leavepolicy-route.js'
 import cookieParser from 'cookie-parser';
 
 
@@ -70,6 +70,7 @@ app.use('/api/leave', leaveRoutes); // Assuming you have a leaveRoutes file
 app.use('/api/reimbursements', reimbursementRoutes);
 app.use('/api/reimbursement-categories', reimbursementCategoryRoutes);
 app.use('/api/table-structures', tableStructureRoutes);
+app.use('/api/leave-policy', leavePolicyRoutes); // Importing leave policy routes
 
 // Start server
 app.listen(PORT, () => {

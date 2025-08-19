@@ -1,32 +1,48 @@
+// routes/leaveRoutes.js
 import express from 'express';
 import {
   applyLeave,
-  getLeave,
-  updateLeaveStatus,
+  approveLeave,
+  rejectLeave,
+  cancelLeave,
   getEmployeeLeaves,
-  getCompanyLeaves,
-  updateLeave
+  getLeavesForCompany,
+  getApprovedLeavesForCompany,
+  getPendingLeavesForCompany,
+  getCancelledLeavesForCompany,
+  getRejectedLeavesForCompany,
+  getRestLeaveOfEmployee,
 } from '../controllers/leave-controller.js';
+import { protect,restrictTo } from '../middleware/authMiddleware.js';
+import { getEmployeeLeaveSummary, getLeaveStatistics } from '../controllers/leaveReport-controller.js';
 
 
-const router = express.Router();
+const r = express.Router();
 
-// Apply for a leave (Employee only)
-router.post('/apply', applyLeave);
+// Apply for leave
+r.post('/leaves/apply', protect, applyLeave);
 
-// Get leave by ID (Manager/Admin/Employee)
-router.get('/get/:leaveId', getLeave);
+// Approve leave (admin/manager action)
+r.patch('/leaves/:id/approve', protect, restrictTo("superadmin", "admin"), approveLeave);
 
-// Update leave status (Manager/Admin)
-router.patch('/update/:id', updateLeaveStatus);
+// Reject leave (admin/manager action)
+r.patch('/leaves/:id/reject', protect, restrictTo("superadmin", "admin"), rejectLeave);
 
-// Get all leaves for a specific employee (Admin/Manager or the employee themselves)
-router.get('/employee/:employeeId',  getEmployeeLeaves);
+// Cancel leave (employee action)
+r.patch('/leaves/:id/cancel', protect, cancelLeave);
 
-// Get all leaves in the company (Admin/Manager)
-router.get('/getCompany/:id',  getCompanyLeaves);
+// Get all leaves for an employee
+r.get('/leaves/:companyId/:employeeId', protect, getEmployeeLeaves);
 
-router.put('/leaves/:id', updateLeave);
+r.get('/leaves/:companyId', protect, restrictTo("superadmin", "admin"), getLeavesForCompany);
+r.get('/approvedleaves/:companyId', protect, restrictTo("superadmin", "admin"), getApprovedLeavesForCompany);
+r.get('/pendingleaves/:companyId', protect, restrictTo("superadmin", "admin"), getPendingLeavesForCompany);
+r.get('/cancelledleaves/:companyId', protect, restrictTo("superadmin", "admin"), getCancelledLeavesForCompany);
+r.get('/rejectedleaves/:companyId', protect, restrictTo("superadmin", "admin"), getRejectedLeavesForCompany);
 
 
-export default router;
+// routes/leaveRoutes.js
+r.get('/:employeeId/summary', getRestLeaveOfEmployee);
+r.get('/:companyId/:year', getLeaveStatistics);
+
+export default r;

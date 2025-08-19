@@ -825,7 +825,8 @@ export const getAllEmployeesByCompanyIdPagination = async (req, res) => {
             { firstName: { $regex: search, $options: "i" } },
             { lastName: { $regex: search, $options: "i" } },
             { personalEmail: { $regex: search, $options: "i" } },
-            { personalMobile: { $regex: search, $options: "i" } }
+            { personalMobile: { $regex: search, $options: "i" } },
+             { employeeId: { $regex: search, $options: "i" } }
           ]
         }
       : {};
