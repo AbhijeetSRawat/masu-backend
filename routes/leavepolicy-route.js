@@ -1,4 +1,5 @@
 // routes/leavePolicyRoutes.js
+// routes/leavePolicyRoutes.js
 import express from 'express';
 import {
   createLeavePolicy,
@@ -6,7 +7,8 @@ import {
   addLeaveType,
   updateLeaveType,
 
-  getLeavePolicy
+  getLeavePolicy,
+  toggleLeaveTypeStatus
 } from '../controllers/leavepolicy-controller.js';
 
 const router = express.Router();
@@ -27,5 +29,6 @@ router.put('/:policyId/type/:typeId', updateLeaveType);
 
 // Get policy by company
 router.get('/company/:companyId', getLeavePolicy);
+router.patch("/:policyId/leave-types/:typeId/toggle", toggleLeaveTypeStatus);
 
 export default router;

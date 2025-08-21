@@ -23,6 +23,10 @@ const leavePolicySchema = new mongoose.Schema({
     type: [Number], 
     default: [0, 6] 
   }, // 0=Sun, 6=Sat
+  includeWeekOff: {
+    type: Boolean,
+    default: false
+  },
   leaveTypes: [{
     name: { 
       type: String, 
@@ -49,6 +53,10 @@ const leavePolicySchema = new mongoose.Schema({
       type: Boolean, 
       default: false 
     },
+     docsRequiredAfterDays: { 
+      type: Number, 
+      default: null // e.g., 3 → require docs if leave > 3 days
+    },
     documentTypes: [String],
     unpaid: { 
       type: Boolean, 
@@ -67,6 +75,10 @@ const leavePolicySchema = new mongoose.Schema({
       type: Number,
       default: null // null means unlimited
     },
+    maxInstancesPerMonth: {
+      type: Number,
+      default: null // null means unlimited
+    },
     coolingPeriod: {
       type: Number,
       default: 0 // days between consecutive leaves of this type
@@ -80,6 +92,10 @@ const leavePolicySchema = new mongoose.Schema({
       default: false
     },
     lapse:{
+      type: Boolean,
+      default: false
+    },
+   excludeHolidays: {
       type: Boolean,
       default: false
     }

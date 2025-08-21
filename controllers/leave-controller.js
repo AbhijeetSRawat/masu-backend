@@ -6,7 +6,10 @@ import {
   validateLeaveType,
   checkLeaveTypeLimits,
   getCompanyPolicy,
-  toYearFromPolicy
+  toYearFromPolicy,
+  getPolicyYearStart,
+  getPolicyYearEnd,
+  getPolicyYearRange
 } from '../services/leaveUtils.js';
 import uploadFileToCloudinary from '../utils/fileUploader.js';
 
@@ -116,12 +119,36 @@ export const applyLeave = async (req, res) => {
       }
 
       // ✅ Validate if documents are required
-      if (typeDef.requiresDocs && filesToProcess.length === 0) {
-        throw new Error("Documents are required for this leave type");
+   
+
+   
+  
+      // ---------------------------------------------------------------
+
+      // ✅ Calculate business days
+      let days = isHalfDay
+        ? 0.5
+        : await businessDaysBetween({ companyId, start: s, end: e , excludeHoliday: typeDef.excludeHolidays , includeWeekOff: policy.includeWeekOff});
+
+      if (days <= 0) {
+        throw new Error("No business days in selected range");
       }
 
-      // ✅ Upload files to Cloudinary
-      if (filesToProcess.length > 0) {
+
+        if (
+        typeDef.requiresDocs &&
+        typeDef.docsRequiredAfterDays !== null &&
+        days > typeDef.docsRequiredAfterDays &&
+        filesToProcess.length === 0
+      ) {
+        throw new Error(
+          `Documents required if leave exceeds ${typeDef.docsRequiredAfterDays} days`
+        );
+      }
+
+         // ✅ Upload files to Cloudinary
+
+     if (filesToProcess.length > 0) {
         try {
           documentsArray = await Promise.all(
             filesToProcess.map(async (file, index) => {
@@ -139,16 +166,6 @@ export const applyLeave = async (req, res) => {
           console.error("Document upload error:", uploadError);
           throw new Error("Failed to upload documents: " + uploadError.message);
         }
-      }
-      // ---------------------------------------------------------------
-
-      // ✅ Calculate business days
-      let days = isHalfDay
-        ? 0.5
-        : await businessDaysBetween({ companyId, start: s, end: e });
-
-      if (days <= 0) {
-        throw new Error("No business days in selected range");
       }
 
       // ✅ Check leave type min/max constraints
@@ -171,7 +188,8 @@ export const applyLeave = async (req, res) => {
               employee: employeeId,
               company: companyId,
               shortCode: shortCode,
-              status: { $in: ["approved", "pending"] } // consider both approved & pending
+              status: { $in: ["approved", "pending"] }, // consider both approved & pending
+              startDate: { $gte: getPolicyYearStart(policy.yearStartMonth), $lte: getPolicyYearEnd(policy.yearStartMonth) }
             }
           },
           {
@@ -183,13 +201,31 @@ export const applyLeave = async (req, res) => {
         ]);
 
         const usedDays = leavesTaken.length > 0 ? leavesTaken[0].totalDays : 0;
-        const remainingDays = maxInstances - usedDays;
+          if (typeDef.maxInstancesPerYear && usedDays + days > typeDef.maxInstancesPerYear) {
+        throw new Error(`Yearly balance exceeded. Remaining: ${typeDef.maxInstancesPerYear - usedDays}`);
+      }
 
-        if (days > remainingDays) {
-          throw new Error(
-            `Insufficient leave balance. You have ${remainingDays} days remaining for ${leaveType}.`
-          );
-        }
+       // ✅ Balance check - Monthly
+      const monthStart = new Date(s.getFullYear(), s.getMonth(), 1);
+      const monthEnd = new Date(s.getFullYear(), s.getMonth() + 1, 0);
+      const leavesTakenMonth = await Leave.aggregate([
+        {
+          $match: {
+            employee: employeeId,
+            company: companyId,
+            shortCode,
+            status: { $in: ["approved", "pending"] },
+            startDate: { $gte: monthStart, $lte: monthEnd }
+          }
+        },
+        { $group: { _id: null, totalDays: { $sum: "$days" } } }
+      ]);
+      const usedMonth = leavesTakenMonth.length > 0 ? leavesTakenMonth[0].totalDays : 0;
+      if (typeDef.maxInstancesPerMonth && usedMonth + days > typeDef.maxInstancesPerMonth) {
+        throw new Error(`Monthly balance exceeded. Remaining: ${typeDef.maxInstancesPerMonth - usedMonth}`);
+      }
+
+      
         
       // ✅ Create leave data
       const leaveData = {

@@ -2,45 +2,103 @@ import Leave from '../models/Leave.js';
 import LeavePolicy from '../models/LeavePolicy.js';
 
 // Calculate business days between two dates (excluding weekends and holidays)
-export const businessDaysBetween = async ({ companyId, start, end, excludeHolidays = true }) => {
-  // Convert dates to Date objects if they aren't already
+// export const businessDaysBetween = async ({ companyId, start, end, excludeHolidays }) => {
+//   // Convert dates to Date objects if they aren't already
+//   const startDate = new Date(start);
+//   const endDate = new Date(end);
+  
+//   // Validate dates
+//   if (endDate < startDate) return 0;
+  
+//   // Get company policy for weekOff days
+//   const policy = await getCompanyPolicy(companyId);
+//   const weekOffDays = policy?.weekOff || [0, 6]; // Default to Sunday and Saturday
+  
+//   // Get holidays if needed
+//   let holidays = [];
+//   if (excludeHolidays && policy?.holidays) {
+//     holidays = policy.holidays
+//       .filter(h => {
+//         const holidayDate = new Date(h.date);
+//         return holidayDate >= startDate && holidayDate <= endDate;
+//       })
+//       .map(h => new Date(h.date).setHours(0, 0, 0, 0));
+//   }
+  
+//   // Calculate business days
+//   let count = 0;
+//   const current = new Date(startDate);
+  
+//   while (current <= endDate) {
+//     const day = current.getDay();
+//     const dateKey = current.setHours(0, 0, 0, 0);
+    
+//     if (!weekOffDays.includes(day) && !holidays.includes(dateKey)) {
+//       count++;
+//     }
+    
+//     current.setDate(current.getDate() + 1);
+//   }
+  
+//   return count;
+// };
+
+// Calculate business days between two dates (excluding weekends and holidays)
+// Calculate business days between two dates 
+// (optionally excluding weekends and holidays)
+export const businessDaysBetween = async ({
+  companyId,
+  start,
+  end,
+  excludeHolidays = false,
+  includeWeekOff = false
+}) => {
+  // Convert to Date objects
   const startDate = new Date(start);
   const endDate = new Date(end);
-  
+
   // Validate dates
   if (endDate < startDate) return 0;
-  
-  // Get company policy for weekOff days
+
+  // Get company policy (weekends + holidays)
   const policy = await getCompanyPolicy(companyId);
-  const weekOffDays = policy?.weekOff || [0, 6]; // Default to Sunday and Saturday
-  
-  // Get holidays if needed
-  let holidays = [];
+  const weekOffDays = policy?.weekOff || []; // Default: Sunday(0), Saturday(6)
+
+  // Get holidays if excludeHolidays = true
+  let holidays = new Set();
   if (excludeHolidays && policy?.holidays) {
-    holidays = policy.holidays
-      .filter(h => {
-        const holidayDate = new Date(h.date);
-        return holidayDate >= startDate && holidayDate <= endDate;
-      })
-      .map(h => new Date(h.date).setHours(0, 0, 0, 0));
+    holidays = new Set(
+      policy.holidays
+        .map(h => new Date(h.date).setHours(0, 0, 0, 0)) // normalize
+        .filter(
+          d =>
+            d >= new Date(startDate).setHours(0, 0, 0, 0) &&
+            d <= new Date(endDate).setHours(0, 0, 0, 0)
+        )
+    );
   }
-  
-  // Calculate business days
-  let count = 0;
-  const current = new Date(startDate);
-  
+
+  // Count business days
+  let businessDays = 0;
+  let current = new Date(startDate);
+
   while (current <= endDate) {
-    const day = current.getDay();
-    const dateKey = current.setHours(0, 0, 0, 0);
-    
-    if (!weekOffDays.includes(day) && !holidays.includes(dateKey)) {
-      count++;
+    const dayOfWeek = current.getDay();
+    const currentDay = new Date(current).setHours(0, 0, 0, 0);
+
+    // If includeWeekOff = false → skip weekends
+    if (includeWeekOff || !weekOffDays.includes(dayOfWeek)) {
+      // Skip holidays if excludeHolidays = true
+      if (!holidays.has(currentDay)) {
+        businessDays++;
+      }
     }
-    
+
+    // Move to next day
     current.setDate(current.getDate() + 1);
   }
-  
-  return count;
+
+  return businessDays;
 };
 
 // Get fiscal year based on policy
@@ -143,3 +201,25 @@ export const checkLeaveTypeLimits = async (employeeId, companyId, leaveType, sta
   
   return true;
 };
+
+// helper functions
+// leaveUtils.js
+export function getPolicyYearStart(yearStartMonth) {
+  const now = new Date();
+  let startYear = now.getMonth() + 1 < yearStartMonth ? now.getFullYear() - 1 : now.getFullYear();
+  return new Date(startYear, yearStartMonth - 1, 1); // policy year start
+}
+
+export function getPolicyYearEnd(yearStartMonth) {
+  const now = new Date();
+  let endYear = now.getMonth() + 1 < yearStartMonth ? now.getFullYear() : now.getFullYear() + 1;
+  return new Date(endYear, yearStartMonth - 1, 0, 23, 59, 59, 999); // policy year end
+}
+
+export function getPolicyYearRange(yearStartMonth) {
+  return {
+    startDate: getPolicyYearStart(yearStartMonth),
+    endDate: getPolicyYearEnd(yearStartMonth)
+  };
+}
+

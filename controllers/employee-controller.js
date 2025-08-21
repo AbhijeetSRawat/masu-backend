@@ -1123,7 +1123,8 @@ export const uploadDocument = async (req, res) => {
 // GET employees by company + month + year
 export const getEmployeesByMonth = async (req, res) => {
   try {
-    const { companyId, month, year } = req.query; // month = 1-12, year = 2025 etc.
+    const { companyId, month, year } = req.params; // month = 1-12, year = 2025 etc.
+
     if (!companyId || !month || !year) {
       return res.status(400).json({
         success: false,

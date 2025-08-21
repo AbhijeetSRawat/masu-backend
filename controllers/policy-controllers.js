@@ -118,3 +118,29 @@ export const getPolicyById = async (req, res) => {
     return res.status(500).json({ success: false, message: 'Server Error' });
   }
 };
+
+export const deletePolicy = async (req, res) => {
+  const { policyId } = req.params;
+
+  try {
+    const policy = await Policy.findByIdAndDelete(policyId);
+
+    if (!policy) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Policy not found' 
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: 'Policy deleted successfully'
+    });
+  } catch (error) {
+    console.error('Delete Policy Error:', error);
+    return res.status(500).json({ 
+      success: false, 
+      message: 'Server Error' 
+    });
+  }
+};
