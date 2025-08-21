@@ -1118,3 +1118,39 @@ export const uploadDocument = async (req, res) => {
     res.status(500).json({ success: false, message: "Server error" });
   }
 };
+
+
+// GET employees by company + month + year
+export const getEmployeesByMonth = async (req, res) => {
+  try {
+    const { companyId, month, year } = req.query; // month = 1-12, year = 2025 etc.
+    if (!companyId || !month || !year) {
+      return res.status(400).json({
+        success: false,
+        message: "companyId, month, and year are required"
+      });
+    }
+
+    // Start & end of given month
+    const startDate = new Date(year, month - 1, 1); // month-1 because JS months = 0-11
+    const endDate = new Date(year, month, 0, 23, 59, 59, 999); // last day of month
+
+    // Query employees
+    const employees = await Employee.find({
+      company: companyId,
+      "employmentDetails.joiningDate": { $gte: startDate, $lte: endDate }
+    }).populate("user"); // populate user details
+
+    return res.status(200).json({
+      success: true,
+      count: employees.length,
+      employees
+    });
+  } catch (error) {
+    console.error("Get Employees by Month Error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Server Error"
+    });
+  }
+};
