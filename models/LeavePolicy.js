@@ -7,6 +7,10 @@ const leavePolicySchema = new mongoose.Schema({
     required: true, 
     unique: true 
   },
+  sandwichLeave: {
+    type: Boolean,
+    default: false
+  },
   yearStartMonth: { 
     type: Number, 
     min: 1, 
@@ -95,10 +99,6 @@ const leavePolicySchema = new mongoose.Schema({
       type: Boolean,
       default: false
     },
-   excludeHolidays: {
-      type: Boolean,
-      default: false
-    }
   }]
 }, { 
   timestamps: true 

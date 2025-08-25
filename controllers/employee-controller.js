@@ -13,14 +13,50 @@ import Shifts from "../models/Shifts.js";
 import uploadFileToCloudinary from "../utils/fileUploader.js";
 
 // Updated getEmployee function
+
+
+import mongoose from "mongoose";
 export const getEmployee = async (req, res, next) => {
   try {
-    const employee = await Employee.findById(req.params.employeeId)
+    const { employeeId } = req.params;
+
+    // ✅ Check if ID is provided
+    if (!employeeId) {
+      return res.status(400).json({
+        status: "fail",
+        message: "Employee ID is required",
+      });
+    }
+
+    let query = Employee.findById(employeeId)
       .populate("user", "email role profile")
-      .populate("company", "name")
-      .populate("employmentDetails.department", "name")
-      .populate("employmentDetails.shift", "name startTime endTime")
-      .populate({
+      .populate("company", "name");
+
+    const employeeExists = await Employee.findById(employeeId).select(
+      "employmentDetails"
+    );
+
+    if (!employeeExists) {
+      return res.status(404).json({
+        status: "fail",
+        message: "No employee found with that ID",
+      });
+    }
+
+    // ✅ Conditional populates
+    if (employeeExists.employmentDetails?.department) {
+      query = query.populate("employmentDetails.department", "name");
+    }
+
+    if (employeeExists.employmentDetails?.shift) {
+      query = query.populate(
+        "employmentDetails.shift",
+        "name startTime endTime"
+      );
+    }
+
+    if (employeeExists.employmentDetails?.reportingTo) {
+      query = query.populate({
         path: "employmentDetails.reportingTo",
         select: "user",
         populate: {
@@ -28,27 +64,24 @@ export const getEmployee = async (req, res, next) => {
           select: "email role profile",
         },
       });
-
-    if (!employee) {
-      return res.status(404).json({
-        status: "fail",
-        message: "No employee found with that ID",
-      });
     }
+
+    const employee = await query;
 
     res.status(200).json({
       status: "success",
-      data: {
-        employee,
-      },
+      data: { employee },
     });
-  } catch (err) {
-    return res.status(400).json({
-      status: "fail",
-      message: err.message,
+  } catch (error) {
+    console.error("Get Employee Error:", error);
+    res.status(500).json({
+      status: "error",
+      message: "Server error",
     });
   }
 };
+
+
 
 // Updated updateBasicEmployeeInfo function
 export const updateBasicEmployeeInfo = async (req, res) => {
@@ -500,6 +533,7 @@ export const createEmployee = async (req, res) => {
       email,
       profile = {},
       companyId,
+      role,
       employmentDetails = {},
       leaveBalance = {},
       customFields,
@@ -542,7 +576,7 @@ export const createEmployee = async (req, res) => {
     const newUser = await User.create({
       email,
       password: hashedPassword,
-      role: "employee",
+      role: role || "employee",
       companyId,
       profile: {
         firstName: profile.firstName,
@@ -557,7 +591,7 @@ export const createEmployee = async (req, res) => {
       lastLogin: null,
       passwordChangedAt: new Date(),
     });
-console.log("New User Created:", newUser);
+
     // 7. Get auto-incremented Sr No (for example use case)
     const employeeCount = await Employee.countDocuments({ company: companyId });
     const srNo = employeeCount + 1;
@@ -568,7 +602,7 @@ console.log("New User Created:", newUser);
       user: newUser._id,
       company: companyId,
       personalDetails: {
-        gender: personalDetails.gender || "",
+        gender: personalDetails.gender || "null",
         dateOfBirth: personalDetails.dateOfBirth || null,
         city: personalDetails.city || "",
         state: personalDetails.state || "",
@@ -639,6 +673,7 @@ export const editEmployee = async (req, res) => {
     const { userId } = req.params;
     const {
       email,
+      role,
       profile = {},
       companyId,
       employmentDetails = {},
@@ -697,6 +732,7 @@ export const editEmployee = async (req, res) => {
     await User.findByIdAndUpdate(userId, {
       email,
       companyId,
+      role: role || user.role,
       profile: {
         firstName: profile.firstName || user.profile.firstName,
         lastName: profile.lastName || user.profile.lastName,
@@ -1053,10 +1089,22 @@ export const bulkCreateEmployees = async (req, res) => {
   }
 };
 
-export const uploadDocument = async (req, res) => {
+
+
+export const getEmployeeDocuments = async (req, res) => {
   try {
     const { employeeId } = req.params;
-    const employee = await Employee.findById(employeeId);
+
+    if (!employeeId) {
+      return res.status(400).json({
+        success: false,
+        message: "Employee ID is required",
+      });
+    }
+
+    const employee = await Employee.findById(employeeId).select(
+      "employmentDetails.documents"
+    );
 
     if (!employee) {
       return res
@@ -1064,53 +1112,105 @@ export const uploadDocument = async (req, res) => {
         .json({ success: false, message: "Employee not found" });
     }
 
-    if (!req.files || Object.keys(req.files).length === 0) {
+    res.status(200).json({
+      success: true,
+      documents: employee.employmentDetails.documents,
+    });
+  } catch (error) {
+    console.error("Get Documents Error:", error);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+};
+
+
+export const uploadDocument = async (req, res) => {
+  try {
+    const { employeeId } = req.params;
+    const { documentName } = req.body; // e.g. "aadharCard"
+    const { files } = req.files; // multiple files allowed
+
+    if (!employeeId || !documentName) {
+      return res.status(400).json({
+        success: false,
+        message: "Employee ID and document name are required",
+      });
+    }
+
+    const employee = await Employee.findById(employeeId);
+    if (!employee) {
+      return res.status(404).json({
+        success: false,
+        message: "Employee not found",
+      });
+    }
+
+    if (!files || files.length === 0) {
       return res
         .status(400)
         .json({ success: false, message: "No files uploaded" });
     }
 
-    const uploadedDocs = [];
-    for (const key of Object.keys(req.files)) {
-      const file = req.files[key];
+    // ✅ Validate and upload each file
+    const MAX_SIZE = 2 * 1024 * 1024; // 2MB
+    const allowedTypes = ["image/jpeg", "image/png", "application/pdf"];
 
-      // Check if document with this name already exists
-      const existingDocIndex = employee.employmentDetails.documents.findIndex(
-        (doc) => doc.name === file.name
-      );
+    const fileArray = Array.isArray(files) ? files : [files];
+
+
+    const uploadedFiles = [];
+    for (const file of fileArray) {
+      if (file.size > MAX_SIZE) {
+        return res.status(400).json({
+          success: false,
+          message: `${file.originalname} exceeds 2MB size limit`,
+        });
+      }
+
+      if (!allowedTypes.includes(file.mimetype)) {
+        return res.status(400).json({
+          success: false,
+          message: `${file.originalname} has invalid file type`,
+        });
+      }
+
       const result = await uploadFileToCloudinary(
         file,
         process.env.FOLDER_NAME
       );
 
-      const newDoc = {
-        name: file.name,
+      uploadedFiles.push({
         type: file.mimetype,
         url: result?.result?.secure_url || "",
         uploadedAt: new Date(),
-      };
-
-      if (existingDocIndex !== -1) {
-        // Replace existing document
-        uploadedDocs[existingDocIndex] = newDoc;
-      } else {
-        // Add new document
-        uploadedDocs.push(newDoc);
-      }
+      });
     }
 
-    // ✅ Push into nested array
-    const updatedDocuments = [
-      ...employee.employmentDetails.documents,
-      ...uploadedDocs,
-    ];
-    employee.employmentDetails.documents = updatedDocuments;
+    console.log("Uploaded Files:", uploadedFiles);
+    // ✅ Check if document exists
+    const existingDocIndex = employee.employmentDetails.documents.findIndex(
+      (doc) => doc.name === documentName
+    );
+
+    if (existingDocIndex !== -1) {
+      // 🔄 Update existing document (replace old files with new ones)
+      employee.employmentDetails.documents[existingDocIndex].files =
+        uploadedFiles;
+      employee.employmentDetails.documents[existingDocIndex].updatedAt =
+        new Date();
+    } else {
+      // ➕ Create new document entry
+      employee.employmentDetails.documents.push({
+        name: documentName,
+        files: uploadedFiles,
+        uploadedAt: new Date(),
+      });
+    }
 
     await employee.save();
 
     res.status(200).json({
       success: true,
-      message: "Documents uploaded successfully",
+      message: `${documentName} uploaded/updated successfully`,
       documents: employee.employmentDetails.documents,
     });
   } catch (error) {
@@ -1155,3 +1255,188 @@ export const getEmployeesByMonth = async (req, res) => {
     });
   }
 };
+
+
+export const getAllNewJoinerByCompanyId = async (req, res) => {
+  try {
+    const { companyId } = req.params;
+
+    if (!companyId) {
+      return res.status(400).json({ message: "Company ID is required" });
+    }
+
+    const employees = await Employee.find({ company: companyId })
+      .populate({
+        path: "user",
+        match: { role: "newjoiner" },
+      })
+      .populate({
+        path: "employmentDetails.reportingTo",
+        populate: {
+          path: "user",
+        },
+      });
+
+    const filtered = employees.filter((emp) => emp.user !== null);
+
+    res.status(200).json({
+      message: "Employees fetched successfully",
+      count: filtered.length,
+      employees: filtered,
+    });
+  } catch (error) {
+    console.error("Error fetching employees:", error);
+    res.status(500).json({
+      message: "Internal server error",
+      error: error.message,
+    });
+  }
+};
+
+
+export const makeuserinactive = async (req,res) =>{
+  const {employeeId} = req.params;
+
+  const employee = await Employee.findByIdAndUpdate(employeeId, { isActive: false }, { new: true });
+
+  if (!employee) {
+    return res.status(404).json({ message: "Employee not found" });
+  }
+
+  res.status(200).json({
+    message: "Employee deactivated successfully",
+    employee
+  });
+}
+
+
+export const makeUserActive = async (req,res) =>{
+  const {employeeId} = req.params;
+  const employee = await Employee.findByIdAndUpdate(employeeId, { isActive: true }, { new: true });
+
+  if (!employee) {
+    return res.status(404).json({ message: "Employee not found" });
+  }
+
+  res.status(200).json({
+    message: "Employee activated successfully",
+    employee
+  });
+}
+
+export const updateDocumentFields = async (req, res) => {
+  try {
+    const { employeeId } = req.params;
+    const { documents } = req.body;
+
+    if (!employeeId || !documents) {
+      return res.status(400).json({
+        success: false,
+        message: "Employee ID and documents are required",
+      });
+    }
+
+    const employee = await Employee.findByIdAndUpdate(
+      employeeId,
+      { "employmentDetails.documents": documents },
+      { new: true, runValidators: true }
+    );
+
+    if (!employee) {
+      return res.status(404).json({
+        success: false,
+        message: "Employee not found",
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      message: "Documents updated successfully",
+      documents: employee.employmentDetails.documents,
+    });
+  } catch (error) {
+    console.error("Update Document Fields Error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Server error",
+    });
+  }
+};
+
+export const makedocumentInValid = async (req, res) =>{
+  const { employeeId } = req.params;
+  const { docName } = req.body;
+
+  if (!employeeId || !docName) {
+    return res.status(400).json({
+      success: false,
+      message: "Employee ID and Document Name are required",
+    });
+  }
+
+  try {
+    const employee = await Employee.findOneAndUpdate(
+      { _id: employeeId, "employmentDetails.documents.name": docName },
+      { $set: { "employmentDetails.documents.$.isValid": false, "employmentDetails.documents.$.validatedBy": req.user._id } },
+      { new: true }
+    );
+
+    if (!employee) {
+      return res.status(404).json({
+        success: false,
+        message: "Employee or Document not found",
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      message: "Document marked as invalid",
+      documents: employee.employmentDetails.documents,
+    });
+  } catch (error) {
+    console.error("Mark Document Invalid Error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Server error",
+    });
+  }
+}
+
+export const makedocumentValid = async (req, res) =>{
+  const { employeeId } = req.params;
+  const { docName } = req.body;
+
+  if (!employeeId || !docName) {
+    return res.status(400).json({
+      success: false,
+      message: "Employee ID and Document Name are required",
+    });
+  }
+
+  try {
+    const employee = await Employee.findOneAndUpdate(
+      { _id: employeeId, "employmentDetails.documents.name": docName },
+      { $set: { "employmentDetails.documents.$.isValid": true, "employmentDetails.documents.$.validatedBy": req.user._id } },
+      { new: true }
+    );
+
+    if (!employee) {
+      return res.status(404).json({
+        success: false,
+        message: "Employee or Document not found",
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      message: "Document marked as invalid",
+      documents: employee.employmentDetails.documents,
+    });
+  } catch (error) {
+    console.error("Mark Document Invalid Error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Server error",
+    });
+  }
+}

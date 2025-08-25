@@ -42,16 +42,24 @@ const employmentSchema = new mongoose.Schema({
   shift: { type: mongoose.Schema.Types.ObjectId, ref: 'Shift' },
   reportingTo: { type: mongoose.Schema.Types.ObjectId, ref: 'Employee' },
   skills: [String],
-  documents: [{
-  name: { type: String },
-  type: { type: String },
-  url: { type: String },
-  uploadedAt: { type: Date }
-}]
+  documents: [
+    {
+      name: { type: String }, // e.g. "aadharCard"
+      files: [
+        {
+          type: { type: String }, // mime type
+          url: { type: String },
+          uploadedAt: { type: Date, default: Date.now },
+        },
+      ],
+        isValid: { type: Boolean, default: false },
+        validatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
+    },
+  ],
 }, { _id: false });
 
 const personalDetailsSchema = new mongoose.Schema({
-  gender: { type: String, enum: ['male', 'female', 'other'] },
+  gender: { type: String, enum: ['male', 'female', 'other','null'], default: 'null' },
   dateOfBirth: { type: Date },
   city: String,
   state: String,

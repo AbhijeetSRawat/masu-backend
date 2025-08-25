@@ -1,7 +1,8 @@
 import mongoose from 'mongoose';
 import Leave from '../models/Leave.js';
+import LeavePolicy from '../models/LeavePolicy.js';
 import { 
-  businessDaysBetween, 
+  // businessDaysBetween, 
   hasOverlappingLeaves, 
   validateLeaveType,
   checkLeaveTypeLimits,
@@ -9,7 +10,8 @@ import {
   toYearFromPolicy,
   getPolicyYearStart,
   getPolicyYearEnd,
-  getPolicyYearRange
+  getPolicyYearRange,
+  businessDaysBetween
 } from '../services/leaveUtils.js';
 import uploadFileToCloudinary from '../utils/fileUploader.js';
 
@@ -29,7 +31,7 @@ const withTransaction = async (fn) => {
   }
 };
 
-import LeavePolicy from "../models/LeavePolicy.js";
+
 
 const getMaxInstancesPerYear = async (companyId, shortCode) => {
   const policy = await LeavePolicy.findOne(
@@ -45,67 +47,61 @@ const getMaxInstancesPerYear = async (companyId, shortCode) => {
 };
 
 
+
+// validate leave type against policy
+
 export const applyLeave = async (req, res) => {
   try {
     const leave = await withTransaction(async (session) => {
       let {
         employeeId,
         companyId,
-        leaveType,
-        shortCode,
+        leaveBreakup = [],
         startDate,
         endDate,
         reason,
         isHalfDay = false,
-        halfDayType = null
+        halfDayType = null,
       } = req.body;
 
-      const maxInstances = await getMaxInstancesPerYear(companyId, shortCode);
-
-      
-
-
-      // ✅ Ensure boolean type for isHalfDay
+      // ensure boolean
       isHalfDay = String(isHalfDay).toLowerCase() === "true";
 
-      // ✅ Validate required fields
-      if (!employeeId || !companyId || !leaveType || !shortCode || !startDate || !endDate || !reason) {
+      if (typeof leaveBreakup === "string") {
+        try {
+          leaveBreakup = JSON.parse(leaveBreakup);
+        } catch (err) {
+          throw new Error("Invalid leaveBreakup format");
+        }
+      }
+
+      // required fields
+      if (!employeeId || !companyId || !startDate || !endDate || !reason) {
         throw new Error("Missing required fields");
       }
+      if (!Array.isArray(leaveBreakup) || leaveBreakup.length === 0) {
+        throw new Error("At least one leave type required");
+      }
 
-      // ✅ Validate half-day type if applicable
+      // validate half day
       if (isHalfDay && !["first-half", "second-half"].includes(halfDayType)) {
-        throw new Error("Invalid half day type. Must be 'first-half' or 'second-half'");
+        throw new Error("Invalid half-day type");
       }
 
-      // ✅ Get and validate company policy
-      const policy = await getCompanyPolicy(companyId);
-      if (!policy) {
-        throw new Error("Leave policy not found for company");
-      }
-
-      // ✅ Validate leave type
-      const typeDef = validateLeaveType(policy, leaveType);
-
-      // ✅ Check leave type limits
-      await checkLeaveTypeLimits(employeeId, companyId, leaveType, startDate);
-
-      // ✅ Date validation
       const s = new Date(startDate);
       const e = new Date(endDate);
-      if (e < s) {
-        throw new Error("End date must be after start date");
-      }
-
-      // ✅ Half-day must be same date
+      if (e < s) throw new Error("End date must be after start date");
       if (isHalfDay && s.toDateString() !== e.toDateString()) {
-        throw new Error("Half day leave must be for the same day");
+        throw new Error("Half-day must be a single day");
       }
 
-      // -------------------- FILE UPLOAD HANDLING --------------------
+      // get company policy
+      const policy = await LeavePolicy.findOne({ company: companyId });
+      if (!policy) throw new Error("Leave policy not found");
+
+      // ---------------- FILE HANDLING ----------------
       let documentsArray = [];
       let filesToProcess = [];
-
       if (req.files) {
         if (req.files.documents) {
           filesToProcess = Array.isArray(req.files.documents)
@@ -117,173 +113,348 @@ export const applyLeave = async (req, res) => {
           filesToProcess = [req.files];
         }
       }
-
-      // ✅ Validate if documents are required
-   
-
-   
-  
-      // ---------------------------------------------------------------
-
-      // ✅ Calculate business days
-      let days = isHalfDay
-        ? 0.5
-        : await businessDaysBetween({ companyId, start: s, end: e , excludeHoliday: typeDef.excludeHolidays , includeWeekOff: policy.includeWeekOff});
-
-      if (days <= 0) {
-        throw new Error("No business days in selected range");
-      }
-
-
-        if (
-        typeDef.requiresDocs &&
-        typeDef.docsRequiredAfterDays !== null &&
-        days > typeDef.docsRequiredAfterDays &&
-        filesToProcess.length === 0
-      ) {
-        throw new Error(
-          `Documents required if leave exceeds ${typeDef.docsRequiredAfterDays} days`
-        );
-      }
-
-         // ✅ Upload files to Cloudinary
-
-     if (filesToProcess.length > 0) {
+      if (filesToProcess.length > 0) {
         try {
           documentsArray = await Promise.all(
-            filesToProcess.map(async (file, index) => {
+            filesToProcess.map(async (file, idx) => {
               const originalFileName =
-                file.originalname || file.name || `Document_${Date.now()}_${index + 1}`;
-              const uploaded = await uploadFileToCloudinary(file,process.env.FOLDER_NAME);
-        
+                file.originalname || file.name || `Doc_${Date.now()}_${idx + 1}`;
+              const uploaded = await uploadFileToCloudinary(
+                file,
+                process.env.FOLDER_NAME
+              );
               return {
                 name: originalFileName,
-                url: uploaded?.result?.secure_url
+                url: uploaded?.result?.secure_url,
               };
             })
           );
-        } catch (uploadError) {
-          console.error("Document upload error:", uploadError);
-          throw new Error("Failed to upload documents: " + uploadError.message);
+        } catch (err) {
+          console.error("Doc upload error:", err);
+          throw new Error("Failed to upload documents");
         }
       }
 
-      // ✅ Check leave type min/max constraints
-      if (days > typeDef.maxPerRequest) {
-        throw new Error(`Exceeds maximum ${typeDef.maxPerRequest} days per request`);
-      }
-      if (days < typeDef.minPerRequest) {
-        throw new Error(`Minimum ${typeDef.minPerRequest} days required for this leave type`);
-      }
+      // ---------------- CALCULATE DAYS ----------------
+      let businessDays = isHalfDay
+        ? 0.5
+        : await businessDaysBetween({
+            companyId,
+            start: s,
+            end: e,
+            excludeHoliday: !policy.sandwichLeave,
+            includeWeekOff: policy.sandwichLeave,
+          });
 
-      // ✅ Check overlapping leaves
-      const overlap = await hasOverlappingLeaves(employeeId, companyId, s, e);
-      if (overlap) {
-        throw new Error("Overlapping leave request exists");
-      }
+      if (businessDays <= 0) throw new Error("No business days in range");
 
-       const leavesTaken = await Leave.aggregate([
+      // ---------------- VALIDATE BREAKUP ----------------
+      let totalDays = 0;
+      for (const part of leaveBreakup) {
+        if (!part.leaveType || !part.shortCode || !part.days) {
+          throw new Error("Invalid leave breakup entry");
+        }
+
+        const typeDef = validateLeaveType(policy, part.leaveType);
+
+        // min/max per request
+        if (part.days > typeDef.maxPerRequest) {
+          throw new Error(
+            `${part.leaveType} exceeds max ${typeDef.maxPerRequest} days per request`
+          );
+        }
+        if (part.days < typeDef.minPerRequest) {
+          throw new Error(
+            `${part.leaveType} requires min ${typeDef.minPerRequest} days`
+          );
+        }
+
+        // yearly balance
+        const yearStart = getPolicyYearStart(policy.yearStartMonth);
+        const yearEnd = getPolicyYearEnd(policy.yearStartMonth);
+        const yearLeaves = await Leave.aggregate([
           {
             $match: {
               employee: employeeId,
               company: companyId,
-              shortCode: shortCode,
-              status: { $in: ["approved", "pending"] }, // consider both approved & pending
-              startDate: { $gte: getPolicyYearStart(policy.yearStartMonth), $lte: getPolicyYearEnd(policy.yearStartMonth) }
-            }
+              "leaveBreakup.shortCode": part.shortCode,
+              status: { $in: ["approved", "pending"] },
+              startDate: { $gte: yearStart, $lte: yearEnd },
+            },
           },
-          {
-            $group: {
-              _id: null,
-              totalDays: { $sum: "$days" }
-            }
-          }
+          { $unwind: "$leaveBreakup" },
+          { $match: { "leaveBreakup.shortCode": part.shortCode } },
+          { $group: { _id: null, total: { $sum: "$leaveBreakup.days" } } },
         ]);
+        const usedYear = yearLeaves.length > 0 ? yearLeaves[0].total : 0;
+        if (
+          typeDef.maxInstancesPerYear &&
+          usedYear + part.days > typeDef.maxInstancesPerYear
+        ) {
+          throw new Error(
+            `${part.leaveType} yearly balance exceeded. Remaining: ${
+              typeDef.maxInstancesPerYear - usedYear
+            }`
+          );
+        }
 
-        const usedDays = leavesTaken.length > 0 ? leavesTaken[0].totalDays : 0;
-          if (typeDef.maxInstancesPerYear && usedDays + days > typeDef.maxInstancesPerYear) {
-        throw new Error(`Yearly balance exceeded. Remaining: ${typeDef.maxInstancesPerYear - usedDays}`);
+        // monthly balance
+        const monthStart = new Date(s.getFullYear(), s.getMonth(), 1);
+        const monthEnd = new Date(s.getFullYear(), s.getMonth() + 1, 0);
+        const monthLeaves = await Leave.aggregate([
+          {
+            $match: {
+              employee: employeeId,
+              company: companyId,
+              "leaveBreakup.shortCode": part.shortCode,
+              status: { $in: ["approved", "pending"] },
+              startDate: { $gte: monthStart, $lte: monthEnd },
+            },
+          },
+          { $unwind: "$leaveBreakup" },
+          { $match: { "leaveBreakup.shortCode": part.shortCode } },
+          { $group: { _id: null, total: { $sum: "$leaveBreakup.days" } } },
+        ]);
+        const usedMonth = monthLeaves.length > 0 ? monthLeaves[0].total : 0;
+        if (
+          typeDef.maxInstancesPerMonth &&
+          usedMonth + part.days > typeDef.maxInstancesPerMonth
+        ) {
+          throw new Error(
+            `${part.leaveType} monthly balance exceeded. Remaining: ${
+              typeDef.maxInstancesPerMonth - usedMonth
+            }`
+          );
+        }
+
+        totalDays += part.days;
       }
 
-       // ✅ Balance check - Monthly
-      const monthStart = new Date(s.getFullYear(), s.getMonth(), 1);
-      const monthEnd = new Date(s.getFullYear(), s.getMonth() + 1, 0);
-      const leavesTakenMonth = await Leave.aggregate([
-        {
-          $match: {
-            employee: employeeId,
-            company: companyId,
-            shortCode,
-            status: { $in: ["approved", "pending"] },
-            startDate: { $gte: monthStart, $lte: monthEnd }
-          }
-        },
-        { $group: { _id: null, totalDays: { $sum: "$days" } } }
-      ]);
-      const usedMonth = leavesTakenMonth.length > 0 ? leavesTakenMonth[0].totalDays : 0;
-      if (typeDef.maxInstancesPerMonth && usedMonth + days > typeDef.maxInstancesPerMonth) {
-        throw new Error(`Monthly balance exceeded. Remaining: ${typeDef.maxInstancesPerMonth - usedMonth}`);
-      }
+    
+      // ---------------- CHECK OVERLAP ----------------
+      const overlap = await hasOverlappingLeaves(employeeId, companyId, s, e);
+      if (overlap) throw new Error("Overlapping leave exists");
 
-      
-        
-      // ✅ Create leave data
+      // ---------------- CREATE LEAVE ----------------
       const leaveData = {
         employee: employeeId,
         company: companyId,
-        leaveType: leaveType,
-        shortCode: shortCode,
+        leaveBreakup,
+        totalDays,
         startDate: s,
         endDate: e,
-        days,
         reason: reason.trim(),
         documents: documentsArray,
         isHalfDay,
         halfDayType: isHalfDay ? halfDayType : null,
-        status: "pending"
+        status: "pending",
       };
 
-      // ✅ Save leave
       const [newLeave] = await Leave.create([leaveData], { session });
 
-      // ✅ Auto-approve if no approval required
-      if (!typeDef.requiresApproval) {
+      // auto approve if no approval needed
+      let autoApprove = leaveBreakup.every((p) => {
+        const def = validateLeaveType(policy, p.leaveType);
+        return !def.requiresApproval;
+      });
+      if (autoApprove) {
         newLeave.status = "approved";
         newLeave.approvedBy = employeeId;
         newLeave.approvedAt = new Date();
         await newLeave.save({ session });
       }
 
-      // ✅ Populate references for response
       await newLeave.populate([
         { path: "employee", select: "name email" },
         { path: "company", select: "name" },
-        { path: "approvedBy", select: "name email" }
+        { path: "approvedBy", select: "name email" },
       ]);
 
       return newLeave;
     });
 
-    // ✅ Response
     res.status(201).json({
       success: true,
+
       message:
         leave.status === "approved"
           ? "Leave auto-approved successfully"
-          : "Leave application submitted for approval",
+          : "Leave submitted for approval",
       leave,
-      documentsUploaded: leave.documents ? leave.documents.length : 0
+      documentsUploaded: leave.documents ? leave.documents.length : 0,
     });
-  } catch (error) {
-    console.error("Apply Leave Error:", error);
-    res.status(400).json({
-      success: false,
-      message: error.message
-    });
+  } catch (err) {
+    console.error("Apply Leave Error:", err);
+    res.status(400).json({ success: false, message: err.message });
   }
 };
 
 
+// export const approveLeave = async (req, res) => {
+//   try {
+//     const { id } = req.params;
+//     const approverId = req.user._id; // From auth middleware
+//     const { comment } = req.body;
+
+//     const leave = await withTransaction(async (session) => {
+//       const leaveDoc = await Leave.findById(id).session(session);
+//       if (!leaveDoc) {
+//         throw new Error('Leave not found');
+//       }
+
+//       if (leaveDoc.status !== 'pending') {
+//         throw new Error('Leave is not pending approval');
+//       }
+
+//       // Get policy to check if approval is needed
+//       const policy = await getCompanyPolicy(leaveDoc.company);
+//       const typeDef = validateLeaveType(policy, leaveDoc.leaveType);
+
+//       // For types that don't require approval, just return as is
+//       if (!typeDef.requiresApproval) {
+//         return leaveDoc;
+//       }
+
+//       // Approve the leave
+//       leaveDoc.status = 'approved';
+//       leaveDoc.approvedBy = approverId;
+//       leaveDoc.approvedAt = new Date();
+//       leaveDoc.comment = comment || '';
+//       await leaveDoc.save({ session });
+
+//       return leaveDoc;
+//     });
+
+//     res.json({ 
+//       success: true, 
+//       message: 'Leave approved successfully',
+//       leave 
+//     });
+//   } catch (error) {
+//     res.status(400).json({ 
+//       success: false, 
+//       message: error.message 
+//     });
+//   }
+// };
+
+// export const rejectLeave = async (req, res) => {
+//   try {
+//     const { id } = req.params;
+//     const { reason } = req.body;
+//     const rejectorId = req.user._id; // From auth middleware
+
+//     if (!reason) {
+//       throw new Error('Rejection reason is required');
+//     }
+
+//     const leave = await Leave.findByIdAndUpdate(
+//       id,
+//       { 
+//         status: 'rejected',
+//         rejectionReason: reason,
+//         approvedAt: new Date(),
+//         rejectedBy: rejectorId
+//       },
+//       { new: true }
+//     );
+
+//     if (!leave) {
+//       throw new Error('Leave not found');
+//     }
+
+//     res.json({ 
+//       success: true, 
+//       message: 'Leave rejected successfully',
+//       leave 
+//     });
+//   } catch (error) {
+//     res.status(400).json({ 
+//       success: false, 
+//       message: error.message 
+//     });
+//   }
+// };
+
+// export const cancelLeave = async (req, res) => {
+//   try {
+//     const { id } = req.params;
+//     const employeeId = req.user._id; // From auth middleware
+
+//     const leave = await Leave.findOneAndUpdate(
+//       { 
+//         _id: id,
+//        // employee: employeeId,
+//         status: { $in: ['pending', 'approved'] } 
+//       },
+//       { status: 'cancelled' },
+//       { new: true }
+//     );
+
+//     if (!leave) {
+//       throw new Error('Leave not found or cannot be cancelled');
+//     }
+
+//     res.json({ 
+//       success: true, 
+//       message: 'Leave cancelled successfully',
+//       leave 
+//     });
+//   } catch (error) {
+//     console.log(error)
+//     res.status(400).json({ 
+//       success: false, 
+//       message: error.message 
+//     });
+//   }
+// };
+
+// export const getEmployeeLeaves = async (req, res) => {
+//   try {
+//     const { employeeId, companyId } = req.params;
+//     const { status, year, leaveType } = req.query;
+
+//     let query = { 
+//       employee: employeeId, 
+//       company: companyId 
+//     };
+
+//     if (status) {
+//       query.status = status;
+//     }
+
+//     if (year) {
+//       const policy = await getCompanyPolicy(companyId);
+//       const yearStartMonth = policy?.yearStartMonth || 1;
+//       const start = new Date(year, yearStartMonth - 1, 1);
+//       const end = new Date(parseInt(year) + 1, yearStartMonth - 1, 0);
+      
+//       query.startDate = { $gte: start, $lte: end };
+//     }
+
+//     if (leaveType) {
+//       query.leaveType = leaveType;
+//     }
+
+//     const leaves = await Leave.find(query)
+//       .sort({ startDate: -1 })
+//       .populate('approvedBy rejectedBy', "profile email");
+
+//     res.json({ 
+//       success: true, 
+//       count: leaves.length,
+//       leaves 
+//     });
+//   } catch (error) {
+//     res.status(400).json({ 
+//       success: false, 
+//       message: error.message 
+//     });
+//   }
+// };
+
+
+// ✅ Approve Leave
 export const approveLeave = async (req, res) => {
   try {
     const { id } = req.params;
@@ -293,45 +464,49 @@ export const approveLeave = async (req, res) => {
     const leave = await withTransaction(async (session) => {
       const leaveDoc = await Leave.findById(id).session(session);
       if (!leaveDoc) {
-        throw new Error('Leave not found');
+        throw new Error("Leave not found");
       }
 
-      if (leaveDoc.status !== 'pending') {
-        throw new Error('Leave is not pending approval');
+      if (leaveDoc.status !== "pending") {
+        throw new Error("Leave is not pending approval");
       }
 
-      // Get policy to check if approval is needed
+      // Get policy + validate
       const policy = await getCompanyPolicy(leaveDoc.company);
-      const typeDef = validateLeaveType(policy, leaveDoc.leaveType);
 
-      // For types that don't require approval, just return as is
-      if (!typeDef.requiresApproval) {
-        return leaveDoc;
-      }
+      // Check all leave types inside leaveBreakup
+      leaveDoc.leaveBreakup.forEach((l) => {
+        const typeDef = validateLeaveType(policy, l.leaveType);
+        if (typeDef.requiresApproval === false) {
+          // If any type doesn’t require approval → skip
+          return leaveDoc;
+        }
+      });
 
-      // Approve the leave
-      leaveDoc.status = 'approved';
+      // ✅ Approve leave
+      leaveDoc.status = "approved";
       leaveDoc.approvedBy = approverId;
       leaveDoc.approvedAt = new Date();
-      leaveDoc.comment = comment || '';
-      await leaveDoc.save({ session });
+      leaveDoc.comment = comment || "";
 
+      await leaveDoc.save({ session });
       return leaveDoc;
     });
 
-    res.json({ 
-      success: true, 
-      message: 'Leave approved successfully',
-      leave 
+    res.json({
+      success: true,
+      message: "Leave approved successfully",
+      leave,
     });
   } catch (error) {
-    res.status(400).json({ 
-      success: false, 
-      message: error.message 
+    res.status(400).json({
+      success: false,
+      message: error.message,
     });
   }
 };
 
+// ✅ Reject Leave
 export const rejectLeave = async (req, res) => {
   try {
     const { id } = req.params;
@@ -339,110 +514,126 @@ export const rejectLeave = async (req, res) => {
     const rejectorId = req.user._id; // From auth middleware
 
     if (!reason) {
-      throw new Error('Rejection reason is required');
+      throw new Error("Rejection reason is required");
     }
 
     const leave = await Leave.findByIdAndUpdate(
       id,
-      { 
-        status: 'rejected',
+      {
+        status: "rejected",
         rejectionReason: reason,
-        approvedAt: new Date(),
-        rejectedBy: rejectorId
+        rejectedBy: rejectorId,
+        rejectedAt: new Date(),
       },
       { new: true }
     );
 
     if (!leave) {
-      throw new Error('Leave not found');
+      throw new Error("Leave not found");
     }
 
-    res.json({ 
-      success: true, 
-      message: 'Leave rejected successfully',
-      leave 
+    res.json({
+      success: true,
+      message: "Leave rejected successfully",
+      leave,
     });
   } catch (error) {
-    res.status(400).json({ 
-      success: false, 
-      message: error.message 
+    res.status(400).json({
+      success: false,
+      message: error.message,
     });
   }
 };
 
+// ✅ Cancel Leave
 export const cancelLeave = async (req, res) => {
   try {
     const { id } = req.params;
     const employeeId = req.user._id; // From auth middleware
 
     const leave = await Leave.findOneAndUpdate(
-      { 
+      {
         _id: id,
-       // employee: employeeId,
-        status: { $in: ['pending', 'approved'] } 
+    
+        status: { $in: ["pending", "approved"] },
       },
-      { status: 'cancelled' },
+      { status: "cancelled", cancelledAt: new Date() },
       { new: true }
     );
 
     if (!leave) {
-      throw new Error('Leave not found or cannot be cancelled');
+      throw new Error("Leave not found or cannot be cancelled");
     }
 
-    res.json({ 
-      success: true, 
-      message: 'Leave cancelled successfully',
-      leave 
+    res.json({
+      success: true,
+      message: "Leave cancelled successfully",
+      leave,
     });
   } catch (error) {
-    console.log(error)
-    res.status(400).json({ 
-      success: false, 
-      message: error.message 
+    res.status(400).json({
+      success: false,
+      message: error.message,
     });
   }
 };
 
+
+
 export const getEmployeeLeaves = async (req, res) => {
   try {
     const { employeeId, companyId } = req.params;
-    const { status, year, leaveType } = req.query;
+    const { status, year, leaveType, shortCode } = req.query;
 
-    let query = { 
-      employee: employeeId, 
-      company: companyId 
+    let query = {
+      employee: employeeId,
+      company: companyId
     };
 
+    // ✅ filter by status
     if (status) {
       query.status = status;
     }
 
+    // ✅ filter by policy year
     if (year) {
       const policy = await getCompanyPolicy(companyId);
       const yearStartMonth = policy?.yearStartMonth || 1;
-      const start = new Date(year, yearStartMonth - 1, 1);
-      const end = new Date(parseInt(year) + 1, yearStartMonth - 1, 0);
-      
+
+      const start = new Date(year, yearStartMonth - 1, 1); 
+      // 👆 first day of policy year
+      const end = new Date(parseInt(year) + 1, yearStartMonth - 1, 0); 
+      // 👆 last day before next policy year
+
       query.startDate = { $gte: start, $lte: end };
     }
 
+    // ✅ filter by leave type (inside breakup array)
     if (leaveType) {
-      query.leaveType = leaveType;
+      query["leaveBreakup.leaveType"] = leaveType; 
+    }
+
+    // ✅ optional filter by shortCode
+    if (shortCode) {
+      query["leaveBreakup.shortCode"] = shortCode;
     }
 
     const leaves = await Leave.find(query)
       .sort({ startDate: -1 })
-      .populate('approvedBy rejectedBy', "profile email");
+      .populate("approvedBy rejectedBy", "profile email")
+      .populate("employee", "name email")
+      .populate("company", "name");
 
-    res.json({ 
-      success: true, 
+    res.json({
+      success: true,
       count: leaves.length,
-      leaves 
+      leaves
     });
   } catch (error) {
-    res.status(400).json({ 
-      success: false, 
-      message: error.message 
+    console.error("Get Employee Leaves Error:", error);
+    res.status(400).json({
+      success: false,
+      message: error.message
     });
   }
 };
@@ -651,56 +842,115 @@ export const getCancelledLeavesForCompany = async (req, res) => {
 };
 
 
-export const getRestLeaveOfEmployee = async (req,res) =>{
-          const {employeeId} = req.params;
-          const { year = new Date().getFullYear() } = req.query;
+// export const getRestLeaveOfEmployee = async (req,res) =>{
+//           const {employeeId} = req.params;
+//           const { year = new Date().getFullYear() } = req.query;
 
-          try {
-            // Get all leaves for the year
-            const yearStart = new Date(year, 0, 1);
-            const yearEnd = new Date(year, 11, 31);
+//           try {
+//             // Get all leaves for the year
+//             const yearStart = new Date(year, 0, 1);
+//             const yearEnd = new Date(year, 11, 31);
 
-            const leaves = await Leave.find({
-              employee: employeeId,
-              startDate: { $gte: yearStart, $lte: yearEnd }
-            });
+//             const leaves = await Leave.find({
+//               employee: employeeId,
+//               startDate: { $gte: yearStart, $lte: yearEnd }
+//             });
 
-            // Manual count calculation
-  const summary = leaves.reduce((acc, leave) => {
-  const leaveType = leave.leaveType; // 👈 correct field name from schema
+//             // Manual count calculation
+//   const summary = leaves.reduce((acc, leave) => {
+//   const leaveType = leave.leaveType; // 👈 correct field name from schema
 
-  if (!acc[leaveType]) {
-    acc[leaveType] = {
-      approved: { count: 0, days: 0 },
-      rejected: { count: 0, days: 0 },
-      pending: { count: 0, days: 0 },
-      cancelled: { count: 0, days: 0 },
-      totalDays: 0
-    };
+//   if (!acc[leaveType]) {
+//     acc[leaveType] = {
+//       approved: { count: 0, days: 0 },
+//       rejected: { count: 0, days: 0 },
+//       pending: { count: 0, days: 0 },
+//       cancelled: { count: 0, days: 0 },
+//       totalDays: 0
+//     };
+//   }
+
+//   acc[leaveType][leave.status].count += 1;
+//   acc[leaveType][leave.status].days += leave.days;
+//   acc[leaveType].totalDays += leave.days;
+
+//   return acc;
+// }, {});
+
+
+
+
+
+//             res.json({
+//               success: true,
+//               summary,
+//               year: parseInt(year),
+
+//             });
+
+//           } catch (error) {
+//             res.status(500).json({
+//               success: false,
+//               message: error.message
+//             });
+//           }
+// };
+
+export const getRestLeaveOfEmployee = async (req, res) => {
+  const { employeeId } = req.params;
+  const { year = new Date().getFullYear() } = req.query;
+
+  try {
+    // Get all leaves for the year
+    const yearStart = new Date(year, 0, 1);
+    const yearEnd = new Date(year, 11, 31);
+
+    const leaves = await Leave.find({
+      employee: employeeId,
+      startDate: { $gte: yearStart, $lte: yearEnd }
+    });
+
+    // Summary object
+    const summary = {};
+
+    leaves.forEach((leave) => {
+      const status = leave.status; // approved / rejected / pending / cancelled
+
+      // Each leave can have multiple breakup items (e.g., 2 CL + 3 PL)
+      leave.leaveBreakup.forEach((item) => {
+        const { leaveType, shortCode, days } = item;
+
+        if (!summary[leaveType]) {
+          summary[leaveType] = {
+            approved: { count: 0, days: 0 },
+            rejected: { count: 0, days: 0 },
+            pending: { count: 0, days: 0 },
+            cancelled: { count: 0, days: 0 },
+            totalDays: 0,
+            shortCode
+          };
+        }
+
+        // increment counts by status
+        summary[leaveType][status].count += 1;
+        summary[leaveType][status].days += days;
+
+        // always add total days (irrespective of status)
+        summary[leaveType].totalDays += days;
+      });
+    });
+
+    res.json({
+      success: true,
+      employeeId,
+      year: parseInt(year),
+      summary
+    });
+  } catch (error) {
+    console.error("getRestLeaveOfEmployee Error:", error);
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
   }
-
-  acc[leaveType][leave.status].count += 1;
-  acc[leaveType][leave.status].days += leave.days;
-  acc[leaveType].totalDays += leave.days;
-
-  return acc;
-}, {});
-
-
-
-
-
-            res.json({
-              success: true,
-              summary,
-              year: parseInt(year),
-
-            });
-
-          } catch (error) {
-            res.status(500).json({
-              success: false,
-              message: error.message
-            });
-          }
 };

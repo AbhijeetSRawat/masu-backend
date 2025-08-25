@@ -21,7 +21,7 @@ import { getEmployeeLeaveSummary, getLeaveStatistics } from '../controllers/leav
 const r = express.Router();
 
 // Apply for leave
-r.post('/leaves/apply', protect, applyLeave);
+r.post('/leaves/apply',  applyLeave);
 
 // Approve leave (admin/manager action)
 r.patch('/leaves/:id/approve', protect, restrictTo("superadmin", "admin"), approveLeave);

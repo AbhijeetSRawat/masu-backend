@@ -11,14 +11,13 @@ const leaveSchema = new mongoose.Schema({
     ref: 'Company', 
     required: true 
   },
-  leaveType: { 
-    type: String, 
-    required: true 
-  },
-  shortCode: { 
-    type: String, 
-    required: true 
-  },
+    leaveBreakup: [
+    {
+      leaveType: { type: String, required: true }, // e.g. CL, PL
+      shortCode: { type: String, required: true }, // optional if you use short code
+      days: { type: Number, required: true } // no. of days taken for that leave type
+    }
+  ],
   startDate: { 
     type: Date, 
     required: true 
@@ -27,7 +26,7 @@ const leaveSchema = new mongoose.Schema({
     type: Date, 
     required: true 
   },
-  days: { 
+  totalDays: { 
     type: Number, 
     required: true 
   },

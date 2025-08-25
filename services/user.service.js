@@ -11,9 +11,9 @@ export const getUserById = async (userId) => {
 
 export const getUserByEmail = async (email, withPassword = false) => {
   if (withPassword) {
-    return User.findOne({ email }).select('+password');
+    return User.findOne({ email }).select('+password').populate("companyId");
   }
-  return User.findOne({ email });
+  return User.findOne({ email }).populate("companyId");
 };
 
 export const updateUser = async (userId, updateData) => {

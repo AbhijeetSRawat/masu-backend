@@ -4,6 +4,7 @@ import {AppError} from '../utils/errorHandler.js';
 import { createUser, getUserByEmail } from '../services/user.service.js';
 import { comparePasswords, hashPassword, sendOtpEmail } from '../utils/helper.js';
 import crypto from 'crypto';
+import Employee from '../models/Employee.js';
 
 const JWT_SECRET =  "krishna";
 const JWT_EXPIRES_IN = 24 * 60 * 60; // 1 day in seconds
@@ -53,7 +54,12 @@ export const login = async (req, res, next) => {
     }
 
     const user = await getUserByEmail(email, true);
+    const employee = await Employee.findOne({ user: user._id });
     
+    if(employee?.isActive === false){
+      return next(new AppError('Employee is not active', 403));
+    }
+
     if (!user || !(await comparePasswords(password, user.password))) {
       return next(new AppError('Incorrect email or password', 401));
     }
@@ -71,6 +77,7 @@ export const login = async (req, res, next) => {
       data: {
         user: {
           id: user._id,
+          employeeId: employee?._id || null,
           companyId: user.companyId,
           email: user.email,
           role: user.role,

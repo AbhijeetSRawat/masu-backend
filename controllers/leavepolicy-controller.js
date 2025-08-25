@@ -2,7 +2,7 @@ import LeavePolicy from '../models/LeavePolicy.js';
 
 export const createLeavePolicy = async (req, res) => {
   try {
-    const { company, yearStartMonth, weekOff, includeWeekOff, leaveTypes, holidays } = req.body;
+    const { company, yearStartMonth, weekOff, includeWeekOff, leaveTypes, holidays, sandwichLeave } = req.body;
 
     // Validate required fields
     if (!company) {
@@ -36,7 +36,8 @@ export const createLeavePolicy = async (req, res) => {
       weekOff: weekOff || [0, 6], // Default to Sunday and Saturday
       includeWeekOff: includeWeekOff || false,
       leaveTypes,
-      holidays: holidays || []
+      holidays: holidays || [],
+      sandwichLeave: sandwichLeave || false
     });
 
     await policy.save();
@@ -57,13 +58,14 @@ export const createLeavePolicy = async (req, res) => {
 export const updateLeavePolicy = async (req, res) => {
   try {
     const { policyId } = req.params;
-    const { yearStartMonth, weekOff, holidays, includeWeekOff } = req.body;
+    const { yearStartMonth, weekOff, holidays, includeWeekOff ,sandwichLeave} = req.body;
 
     const updates = {};
     if (yearStartMonth !== undefined) updates.yearStartMonth = yearStartMonth;
     if (weekOff !== undefined) updates.weekOff = weekOff;
     if (holidays !== undefined) updates.holidays = holidays;
     if (includeWeekOff !== undefined) updates.includeWeekOff = includeWeekOff;
+    if (sandwichLeave !== undefined) updates.sandwichLeave = sandwichLeave;
 
     const updated = await LeavePolicy.findByIdAndUpdate(
       policyId,

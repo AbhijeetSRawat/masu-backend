@@ -2,6 +2,7 @@
 import jwt from 'jsonwebtoken';
 import User from '../models/User.js';
 import env from 'dotenv';
+import { AppError } from '../utils/errorHandler.js';
 env.config();
 
 export const protect = async (req, res, next) => {
