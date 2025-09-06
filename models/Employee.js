@@ -56,6 +56,21 @@ const employmentSchema = new mongoose.Schema({
         validatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
     },
   ],
+  status: {
+    type: String,
+    enum: ['active', 'inactive', 'terminated', 'resigned', 'notice-period'],
+    default: 'active'
+  },
+  noticePeriod: {
+    type: Number, // in days
+    default: 30
+  },
+  resignation: {
+    applied: { type: Boolean, default: false },
+    appliedDate: Date,
+    approvedDate: Date,
+    lastWorkingDate: Date
+  }
 }, { _id: false });
 
 const personalDetailsSchema = new mongoose.Schema({

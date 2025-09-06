@@ -39,9 +39,17 @@ const leaveSchema = new mongoose.Schema({
     enum: ['pending', 'approved', 'rejected', 'cancelled'], 
     default: 'pending' 
   },
-  approvedBy: { 
+  approvedByHR: { 
     type: mongoose.Schema.Types.ObjectId, 
     ref: 'User' 
+  },
+  approvedByManager: { 
+    type: mongoose.Schema.Types.ObjectId, 
+    ref: 'User' 
+  },
+  approvedByAdmin: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User'
   },
   rejectedBy: { 
     type: mongoose.Schema.Types.ObjectId, 

@@ -17,6 +17,9 @@ import reimbursementCategoryRoutes from './routes/reimbursement-category-routes.
 import tableStructureRoutes from './routes/table-structure-routes.js';
  import leavePolicyRoutes  from './routes/leavepolicy-route.js'
 import cookieParser from 'cookie-parser';
+import resignationRoutes from './routes/resignation-routes.js'
+import regularizationRoutes from './routes/regularization-routes.js';
+import subAdminRoutes from './routes/subAdmin-routes.js'
 
 
 
@@ -70,7 +73,10 @@ app.use('/api/leave', leaveRoutes); // Assuming you have a leaveRoutes file
 app.use('/api/reimbursements', reimbursementRoutes);
 app.use('/api/reimbursement-categories', reimbursementCategoryRoutes);
 app.use('/api/table-structures', tableStructureRoutes);
-app.use('/api/leave-policy', leavePolicyRoutes); // Importing leave policy routes
+app.use('/api/leave-policy', leavePolicyRoutes);
+app.use('/api/resignation', resignationRoutes);
+app.use('/api/regularization', regularizationRoutes);
+app.use('/api/sub-admin', subAdminRoutes)
 
 // Start server
 app.listen(PORT, () => {

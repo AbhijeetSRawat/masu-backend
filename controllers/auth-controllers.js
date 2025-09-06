@@ -55,8 +55,8 @@ export const login = async (req, res, next) => {
 
     const user = await getUserByEmail(email, true);
     const employee = await Employee.findOne({ user: user._id });
-    
-    if(employee?.isActive === false){
+
+    if (employee?.isActive === false) {
       return next(new AppError('Employee is not active', 403));
     }
 
@@ -64,12 +64,53 @@ export const login = async (req, res, next) => {
       return next(new AppError('Incorrect email or password', 401));
     }
 
+    // 🔑 Generate JWT
     const token = jwt.sign({ id: user._id }, JWT_SECRET, {
       expiresIn: JWT_EXPIRES_IN
     });
 
+    // ⏰ Update last login
     user.lastLogin = new Date();
     await user.save();
+
+    // 🍪 Send token as HTTP-only cookie
+    res.cookie("token", token, {
+      httpOnly: true,       // prevent JS access
+      secure: process.env.NODE_ENV === "production", // only HTTPS in prod
+      sameSite: "strict",   // protect from CSRF
+      maxAge: 24 * 60 * 60 * 1000 // 1 day
+    });
+
+    // ✅ Response without exposing token
+    res.status(200).json({
+      status: 'success',
+      token,
+      data: {
+        user: {
+          id: user._id,
+          employeeId: employee?._id || null,
+          companyId: user.companyId,
+          email: user.email,
+          role: user.role,
+          permissions: user?.permissions
+        }
+      }
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+
+export const getMe = async (req, res, next) => {
+  try {
+    
+    const user = await User.findById(req.user._id).select('-password');
+     const employee = await Employee.findOne({ user: user._id });
+
+    if (!user) {
+      return next(new AppError('User not found', 404));
+    }
 
     res.status(200).json({
       status: 'success',
@@ -84,36 +125,6 @@ export const login = async (req, res, next) => {
           user:user
         }
       }
-    });
-  } catch (err) {
-    next(err);
-  }
-};
-
-export const getMe = async (req, res, next) => {
-  try {
-    const token = req.cookies?.token;
-    console.log("Cookies received:", req.cookies);
-console.log("Token from cookie:", req.cookies?.token);
-
-  
-    if (!token) {
-      return next(new AppError('Not authorized, token missing', 401));
-    }
-
-    const decoded = jwt.verify(token, JWT_SECRET);
-    console.log("decode", decoded)
-    const user = await User.findById(decoded.id).select('-password');
-
-    if (!user) {
-      return next(new AppError('User not found', 404));
-    }
-
-    res.status(200).json({
-      status: 'success',
-      data: {
-        user,
-      },
     });
   } catch (err) {
     return next(new AppError('Invalid or expired token', 401));

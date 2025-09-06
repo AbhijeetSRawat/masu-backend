@@ -25,13 +25,14 @@ const userSchema = new mongoose.Schema({
   role: { 
     type: String, 
     required: true,
-    enum: ['superadmin', 'admin', 'hr', 'manager', 'employee','newjoiner'],
+    enum: ['superadmin', 'admin', 'hr', 'manager', 'employee','newjoiner','subadmin'],
     default: 'employee'
   },
   companyId: { 
     type: mongoose.Schema.Types.ObjectId, 
     ref: 'Company',
   },
+  permissions: [{ type: String }], 
    customFields: [customFieldSchema],
   profile: { type: profileSchema  },
   isActive: { type: Boolean, default: true },

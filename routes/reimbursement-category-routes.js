@@ -10,9 +10,9 @@ import { protect, restrictTo } from '../middleware/authMiddleware.js';
 
 const router = express.Router();
 
-router.post('/', protect,restrictTo('admin','superadmin'), createCategory);
+router.post('/', protect,restrictTo('admin','superadmin','subadmin'), createCategory);
 router.get('/:companyId', protect, getAllCategories);
-router.put('/:id', protect,restrictTo('admin','superadmin'), updateCategory);
+router.put('/:id', protect,restrictTo('admin','superadmin','subadmin'), updateCategory);
 
 
 export default router;

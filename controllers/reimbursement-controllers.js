@@ -58,6 +58,45 @@ export const updateReimbursementStatus = async (req, res) => {
   }
 };
 
+export const bulkUpdateReimbursementStatus = async (req, res) => {
+  try {
+    const { ids, status } = req.body;
+
+    if (!ids || !Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({ success: false, message: "Reimbursement IDs are required" });
+    }
+
+    if (!["approved", "rejected", "paid"].includes(status)) {
+      return res.status(400).json({ success: false, message: "Invalid status" });
+    }
+
+    // Update in bulk
+    await Reimbursement.updateMany(
+      { _id: { $in: ids } },
+      {
+        $set: {
+          status,
+          reviewedBy: req.user.id,
+          reviewedAt: new Date(),
+        },
+      }
+    );
+
+    // Fetch updated records
+    const updatedReimbursements = await Reimbursement.find({ _id: { $in: ids } });
+
+    res.status(200).json({
+      success: true,
+      message: `Reimbursements updated to '${status}' successfully`,
+      count: updatedReimbursements.length,
+      data: updatedReimbursements,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+};
+
 
 export const getCompanyReimbursements = async (req, res) => {
   try {

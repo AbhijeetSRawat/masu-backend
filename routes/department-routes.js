@@ -1,5 +1,6 @@
 import express from "express"
-import { createDepartment, editDepartment, getDepartmentsByCompany } from "../controllers/department-controller.js";
+import { AssignHRorManager, createDepartment, editDepartment, getAllHRsAndManagers, getDepartmentsByCompany, getHRAndManagerByDepartment, updateDetailsHRorManager, updateHRorManager } from "../controllers/department-controller.js";
+import { protect, restrictTo } from "../middleware/authMiddleware.js";
 
 
 const router = express.Router()
@@ -8,5 +9,12 @@ router.post("/create", createDepartment)
 router.put("/edit/:departmentId", editDepartment) // Assuming editDepartment is also handled by createDepartment for simplicity
 router.get("/getAll/:companyId", getDepartmentsByCompany) // Uncomment and implement if needed
 
+
+//Assigning HR and Manager to department
+router.post("/assignHrManager",protect, restrictTo("admin","superadmin","subadmin"), AssignHRorManager);
+router.put("/updateHrManager",protect,restrictTo("admin","superadmin","subadmin"), updateHRorManager);
+router.patch("/updateHRManagerDetails",protect,restrictTo("admin","superadmin","subadmin","hr","manager"), updateDetailsHRorManager);
+router.get("/getAll/:companyId",protect,restrictTo("admin","superadmin","subadmin","hr","manager"), getAllHRsAndManagers);
+router.get("/getHRAndManager/:departmentId", protect, restrictTo("admin","superadmin","subadmin","hr","manager","employee"), getHRAndManagerByDepartment);
 
 export default router;

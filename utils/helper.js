@@ -89,3 +89,29 @@ export const sendOtpEmail = async (email, subject) => {
     console.error("Error sending OTP email:", error);
   }
 };
+
+export const sendSubAdminCredentials = async (email, loginEmail, tempPassword, companyId) => {
+  const mailOptions = {
+    from: process.env.EMAIL_USER,
+    to: email,
+    subject: "MASU Subadmin Account Credentials",
+    text: `
+👋 Your subadmin account has been successfully created!
+
+🔐 Login Email: ${loginEmail}
+🔑 Temporary Password: ${tempPassword}
+🏢 Company ID: ${companyId}
+
+Please login as soon as possible and change your password for security.
+
+Welcome aboard!
+    `.trim(),
+  };
+
+  try {
+    await transporter.sendMail(mailOptions);
+    console.log("Subadmin credentials sent to:", email);
+  } catch (error) {
+    console.error("Error sending subadmin credentials:", error);
+  }
+};

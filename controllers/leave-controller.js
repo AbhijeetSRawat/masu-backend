@@ -265,7 +265,14 @@ export const applyLeave = async (req, res) => {
       }
 
       await newLeave.populate([
-        { path: "employee", select: "name email" },
+        {
+        path: 'employee',
+        select: 'user',
+        populate:{
+          path: 'user',
+          select:'profile'
+        }
+      },
         { path: "company", select: "name" },
         { path: "approvedBy", select: "name email" },
       ]);
@@ -455,6 +462,8 @@ export const applyLeave = async (req, res) => {
 
 
 // ✅ Approve Leave
+
+
 export const approveLeave = async (req, res) => {
   try {
     const { id } = req.params;
@@ -579,6 +588,69 @@ export const cancelLeave = async (req, res) => {
 };
 
 
+export const bulkUpdateLeaves = async (req, res) => {
+  try {
+    const { ids, action, comment, reason } = req.body;
+    const userId = req.user._id; // approver/rejector/canceller from auth
+
+    if (!ids || !Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({ success: false, message: "Leave IDs are required" });
+    }
+
+    if (!["approve", "reject", "cancel"].includes(action)) {
+      return res.status(400).json({ success: false, message: "Invalid action" });
+    }
+
+    let updateData = {};
+    if (action === "approve") {
+      updateData = {
+        status: "approved",
+        approvedBy: userId,
+        approvedAt: new Date(),
+        comment: comment || "",
+      };
+    } else if (action === "reject") {
+      if (!reason) {
+        return res.status(400).json({ success: false, message: "Rejection reason is required" });
+      }
+      updateData = {
+        status: "rejected",
+        rejectionReason: reason,
+        rejectedBy: userId,
+        rejectedAt: new Date(),
+      };
+    } else if (action === "cancel") {
+      updateData = {
+        status: "cancelled",
+        cancelledAt: new Date(),
+      };
+    }
+
+    // Update in bulk
+    await Leave.updateMany(
+      { _id: { $in: ids } },
+      { $set: updateData }
+    );
+
+    // Fetch updated documents
+    const updatedLeaves = await Leave.find({ _id: { $in: ids } });
+
+    res.json({
+      success: true,
+      message: `Leaves ${action}d successfully`,
+      count: updatedLeaves.length,
+      data: updatedLeaves,
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+
 
 export const getEmployeeLeaves = async (req, res) => {
   try {
@@ -621,7 +693,14 @@ export const getEmployeeLeaves = async (req, res) => {
     const leaves = await Leave.find(query)
       .sort({ startDate: -1 })
       .populate("approvedBy rejectedBy", "profile email")
-      .populate("employee", "name email")
+      .populate({
+        path: 'employee',
+        select: 'user',
+        populate:{
+          path: 'user',
+          select:'profile'
+        }
+      })
       .populate("company", "name");
 
     res.json({

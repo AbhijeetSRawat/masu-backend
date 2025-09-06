@@ -1,9 +1,10 @@
 import Shift from '../models/Shifts.js';
 import Company from '../models/Company.js';
 
+// Add a new shift
 export const addShift = async (req, res) => {
   try {
-    const { companyId, name, startTime, endTime } = req.body;
+    const { companyId, name, startTime, endTime, gracePeriod, halfDayThreshold, isNightShift, breakDuration } = req.body;
 
     // 0. Validate Company exists
     const company = await Company.findById(companyId);
@@ -17,12 +18,16 @@ export const addShift = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Shift with this name already exists for this company' });
     }
 
-    // 2. Create shift
+    // 2. Create shift with extra fields
     const newShift = new Shift({
       company: companyId,
       name,
       startTime,
       endTime,
+      gracePeriod,
+      halfDayThreshold,
+      isNightShift,
+      breakDuration,
       isActive: true
     });
 
@@ -40,11 +45,11 @@ export const addShift = async (req, res) => {
   }
 };
 
-
+// Update an existing shift
 export const updateShift = async (req, res) => {
   try {
     const { shiftId } = req.params;
-    const { name, startTime, endTime, isActive } = req.body;
+    const { name, startTime, endTime, gracePeriod, halfDayThreshold, isNightShift, breakDuration, isActive } = req.body;
 
     // 0. Find shift by ID
     const shift = await Shift.findById(shiftId);
@@ -56,6 +61,10 @@ export const updateShift = async (req, res) => {
     if (name) shift.name = name;
     if (startTime) shift.startTime = startTime;
     if (endTime) shift.endTime = endTime;
+    if (typeof gracePeriod !== 'undefined') shift.gracePeriod = gracePeriod;
+    if (typeof halfDayThreshold !== 'undefined') shift.halfDayThreshold = halfDayThreshold;
+    if (typeof isNightShift !== 'undefined') shift.isNightShift = isNightShift;
+    if (typeof breakDuration !== 'undefined') shift.breakDuration = breakDuration;
     if (typeof isActive !== 'undefined') shift.isActive = isActive;
 
     await shift.save();
@@ -72,12 +81,11 @@ export const updateShift = async (req, res) => {
   }
 };
 
-
+// Get all shifts for a company
 export const getAllShifts = async (req, res) => {
   try {
     const { companyId } = req.params;
 
-    // 0. Validate Company exists
     const shifts = await Shift.find({ company: companyId }).populate('company');
     if (!shifts || shifts.length === 0) {
       return res.status(404).json({ success: false, message: 'No shifts found for this company' });
@@ -92,4 +100,4 @@ export const getAllShifts = async (req, res) => {
     console.error('Get All Shifts Error:', error);
     res.status(500).json({ success: false, message: 'Server error' });
   }
-}
+};

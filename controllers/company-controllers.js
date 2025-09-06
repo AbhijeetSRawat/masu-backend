@@ -3,7 +3,20 @@ import Company from "../models/Company.js"
 import User from '../models/User.js';
 import { generateRandomPassword, sendAdminCredentials} from "../utils/helper.js"
 import bcrypt from "bcryptjs"
+import mongoose from 'mongoose';
 
+import Shift from '../models/Shifts.js';
+import Resignation from '../models/Resignation.js';
+import ReimbursementCategory from '../models/ReimbursementCategory.js';
+import Policy from '../models/Policy.js';
+import Reimbursement from '../models/Reimbursement.js';
+import LeavePolicy from '../models/LeavePolicy.js';
+import Leave from '../models/Leave.js';
+import EmployeeLeaveBalance from '../models/EmployeeLeaveBalance.js';
+import Employee from '../models/Employee.js';
+import Department from '../models/Department.js';
+
+import AttendanceRegularization from '../models/AttendanceRegularization.js';
 import Counter from '../models/Counter.js';
 import uploadFileToCloudinary from "../utils/fileUploader.js";
 const getNextCompanyId = async () => {
@@ -346,7 +359,341 @@ try {
     res.status(500).json({ success: false, message: "Server error" });
   }
 };
- 
 
 
 
+const isValidObjectId = (id) => {
+  return mongoose.Types.ObjectId.isValid(id);
+};
+
+
+// Utility: safely execute a query
+const safeFetch = async (query, label) => {
+  try {
+    return await query;
+  } catch (err) {
+    console.error(`❌ Error fetching ${label}:`, err.message);
+    return [];
+  }
+};
+
+export const downloadCompanyData = async (req, res) => {
+  try {
+    const { companyId } = req.params;
+   
+
+    // Validate companyId
+    if (!mongoose.Types.ObjectId.isValid(companyId)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid company ID format",
+      });
+    }
+
+    // Check company exists
+    const company = await Company.findById(companyId);
+    if (!company) {
+      return res.status(404).json({
+        success: false,
+        message: "Company not found",
+      });
+    }
+
+    // Fetch all related data
+    const users = await safeFetch(
+      User.find({ companyId })
+        .select("-password -passwordResetToken -passwordResetExpires")
+        .populate("companyId")
+        .lean(),
+      "Users"
+    );
+
+    const shifts = await safeFetch(
+      Shift.find({ company: companyId }).populate("company").lean(),
+      "Shifts"
+    );
+
+    const resignations = await safeFetch(
+      Resignation.find({ company: companyId })
+        .populate("user company approvedBy")
+        .populate({
+          path: "employee",
+          populate: { path: "user", select: "email profile" }
+        })
+        .lean(),
+      "Resignations"
+    );
+
+    const reimbursementCategories = await safeFetch(
+      ReimbursementCategory.find({ company: companyId })
+        .populate("company createdBy")
+        .lean(),
+      "ReimbursementCategories"
+    );
+
+    const policies = await safeFetch(
+      Policy.find({ company: companyId }).populate("company").lean(),
+      "Policies"
+    );
+
+    const reimbursements = await safeFetch(
+      Reimbursement.find({ company: companyId })
+        .populate("company category reviewedBy paymentSlip.paidBy")
+        .populate({
+          path: "employee",
+          populate: { path: "user", select: "email profile" }
+        })
+        .lean(),
+      "Reimbursements"
+    );
+
+    const leavePolicies = await safeFetch(
+      LeavePolicy.find({ company: companyId }).populate("company").lean(),
+      "LeavePolicies"
+    );
+
+    const leaves = await safeFetch(
+      Leave.find({ company: companyId })
+        .populate("company approvedBy rejectedBy")
+        .populate({
+          path: "employee",
+          populate: { path: "user", select: "email profile" }
+        })
+        .lean(),
+      "Leaves"
+    );
+
+    const employeeLeaveBalances = await safeFetch(
+      EmployeeLeaveBalance.find({ company: companyId })
+        .populate("company")
+        .populate({
+          path: "employee",
+          populate: { path: "user", select: "email profile" }
+        })
+        .lean(),
+      "EmployeeLeaveBalances"
+    );
+
+    const employees = await safeFetch(
+      Employee.find({ company: companyId })
+        .populate(
+          "user company employmentDetails.department employmentDetails.shift employmentDetails.reportingTo"
+        )
+        .lean(),
+      "Employees"
+    );
+
+    const departments = await safeFetch(
+      Department.find({ company: companyId }).populate("company") // populate company
+    .populate({
+      path: "manager",   // populate manager
+      populate: {
+        path: "user",    select: "email profile" // inside manager, populate user
+      },
+    }).lean(),
+      "Departments"
+    );
+
+    const attendanceRegularizations = await safeFetch(
+      AttendanceRegularization.find({ company: companyId })
+        .populate("employee user company shift reviewedBy createdBy")
+        .lean(),
+      "AttendanceRegularizations"
+    );
+
+    // Final response
+    return res.status(200).json({
+      success: true,
+      exportedAt: new Date().toISOString(),
+      company,
+      data: {
+        users,
+        shifts,
+        resignations,
+        reimbursementCategories,
+        policies,
+        reimbursements,
+        leavePolicies,
+        leaves,
+        employeeLeaveBalances,
+        employees,
+        departments,
+        attendanceRegularizations,
+      },
+      counts: {
+        users: users.length,
+        shifts: shifts.length,
+        resignations: resignations.length,
+        reimbursementCategories: reimbursementCategories.length,
+        policies: policies.length,
+        reimbursements: reimbursements.length,
+        leavePolicies: leavePolicies.length,
+        leaves: leaves.length,
+        employeeLeaveBalances: employeeLeaveBalances.length,
+        employees: employees.length,
+        departments: departments.length,
+        attendanceRegularizations: attendanceRegularizations.length,
+      },
+    });
+  } catch (error) {
+    console.error("❌ Download controller error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Error processing request",
+      error: error.message,
+    });
+  }
+};
+
+/**
+ * Get company data statistics without downloading
+ */
+export const getCompanyDataStats = async (req, res) => {
+  try {
+    const { companyId } = req.params;
+    
+    // Validate companyId format
+    if (!isValidObjectId(companyId)) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Invalid company ID format' 
+      });
+    }
+
+    // Verify company exists
+    const company = await Company.findById(companyId);
+    if (!company) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Company not found' 
+      });
+    }
+
+    // Get counts for each collection with error handling
+    const countPromises = [
+      User.countDocuments({ companyId }).catch(() => 0),
+      Shift.countDocuments({ company: companyId }).catch(() => 0),
+      Resignation.countDocuments({ company: companyId }).catch(() => 0),
+      ReimbursementCategory.countDocuments({ company: companyId }).catch(() => 0),
+      Policy.countDocuments({ company: companyId }).catch(() => 0),
+      Reimbursement.countDocuments({ company: companyId }).catch(() => 0),
+      LeavePolicy.countDocuments({ company: companyId }).catch(() => 0),
+      Leave.countDocuments({ company: companyId }).catch(() => 0),
+      EmployeeLeaveBalance.countDocuments({ company: companyId }).catch(() => 0),
+      Employee.countDocuments({ company: companyId }).catch(() => 0),
+      Department.countDocuments({ company: companyId }).catch(() => 0),
+      AttendanceRegularization.countDocuments({ company: companyId }).catch(() => 0)
+    ];
+
+    const counts = await Promise.all(countPromises);
+
+    const [
+      usersCount,
+      shiftsCount,
+      resignationsCount,
+      reimbursementCategoriesCount,
+      policiesCount,
+      reimbursementsCount,
+      leavePoliciesCount,
+      leavesCount,
+      employeeLeaveBalancesCount,
+      employeesCount,
+      departmentsCount,
+      attendanceRegularizationsCount
+    ] = counts;
+
+    res.json({
+      success: true,
+      data: {
+        company: {
+          name: company.name,
+          id: company._id.toString(),
+          email: company.email
+        },
+        counts: {
+          users: usersCount,
+          shifts: shiftsCount,
+          resignations: resignationsCount,
+          reimbursementCategories: reimbursementCategoriesCount,
+          policies: policiesCount,
+          reimbursements: reimbursementsCount,
+          leavePolicies: leavePoliciesCount,
+          leaves: leavesCount,
+          employeeLeaveBalances: employeeLeaveBalancesCount,
+          employees: employeesCount,
+          departments: departmentsCount,
+          attendanceRegularizations: attendanceRegularizationsCount
+        },
+        totalRecords: counts.reduce((sum, count) => sum + count, 0),
+        lastUpdated: new Date().toISOString()
+      }
+    });
+
+  } catch (error) {
+    console.error('Stats error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error fetching company data statistics', 
+      error: error.message 
+    });
+  }
+};
+
+/**
+ * Get list of available collections for a company
+ */
+export const getAvailableCollections = async (req, res) => {
+  try {
+    const { companyId } = req.params;
+    
+    // Validate companyId format
+    if (!isValidObjectId(companyId)) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Invalid company ID format' 
+      });
+    }
+
+    // Verify company exists
+    const company = await Company.findById(companyId);
+    if (!company) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Company not found' 
+      });
+    }
+
+    res.json({
+      success: true,
+      data: {
+        company: {
+          name: company.name,
+          id: company._id.toString()
+        },
+        collections: [
+          { name: 'users', description: 'System users with roles and permissions' },
+          { name: 'shifts', description: 'Work shift definitions' },
+          { name: 'resignations', description: 'Employee resignation records' },
+          { name: 'reimbursementCategories', description: 'Reimbursement categories' },
+          { name: 'policies', description: 'Company policies' },
+          { name: 'reimbursements', description: 'Employee reimbursement requests' },
+          { name: 'leavePolicies', description: 'Leave policy configurations' },
+          { name: 'leaves', description: 'Employee leave requests' },
+          { name: 'employeeLeaveBalances', description: 'Employee leave balances' },
+          { name: 'employees', description: 'Employee profiles and details' },
+          { name: 'departments', description: 'Company departments' },
+          { name: 'attendanceRegularizations', description: 'Attendance regularization requests' },
+          { name: 'company', description: 'Company information' }
+        ]
+      }
+    });
+
+  } catch (error) {
+    console.error('Collections error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error fetching available collections', 
+      error: error.message 
+    });
+  }
+};
