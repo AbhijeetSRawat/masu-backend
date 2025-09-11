@@ -1,5 +1,5 @@
 import express from "express"
-import { AssignHRorManager, createDepartment, editDepartment, getAllHRs, getAllHRsAndManagers, getAllManagers, getDepartmentsByCompany, getHRAndManagerByDepartment, updateDetailsHRorManager, updateHRorManager } from "../controllers/department-controller.js";
+import { AssignHRorManager, createDepartment, editDepartment, getAllHRs,  getAllManagers, getDepartmentsByCompany, getHRAndManagerByDepartment, updateDetailsHRorManager, updateHRorManager } from "../controllers/department-controller.js";
 import { protect, restrictTo } from "../middleware/authMiddleware.js";
 
 
