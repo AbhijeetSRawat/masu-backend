@@ -11,3 +11,4 @@ const departmentSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 export default mongoose.model('Department', departmentSchema);
+

@@ -1,11 +1,22 @@
 import Department from '../models/Department.js';
 import Company from '../models/Company.js';
 import Employee from '../models/Employee.js';
+import User from '../models/User.js'
+
+
+import bcrypt from "bcryptjs";
+
+import {
+
+  generateRandomPassword,
+  sendAdminCredentials,
+} from "../utils/helper.js";
+
 
 // CREATE DEPARTMENT
 export const createDepartment = async (req, res) => {
   try {
-    const { name, companyId, description, manager } = req.body;
+    const { name, companyId, description } = req.body;
 
     // Validate company
     const company = await Company.findById(companyId);
@@ -23,7 +34,8 @@ export const createDepartment = async (req, res) => {
       name,
       company: companyId,
       description,
-      manager: manager || null
+      manager: null,
+      hr: null // Uncomment if HR assignment is needed during creation
     });
 
 
@@ -44,40 +56,13 @@ export const createDepartment = async (req, res) => {
 export const editDepartment = async (req, res) => {
   try {
     const { departmentId } = req.params;
-    const { name, description, manager } = req.body;
+    const { name, description } = req.body;
 
     const department = await Department.findById(departmentId);
     if (!department) {
       return res.status(404).json({ success: false, message: "Department not found" });
     }
-
-    const oldManagerId = department.manager?.toString();
-
-    // If manager is changing
-    if (manager && manager !== oldManagerId) {
-      // Check if new manager was already assigned to some department
-      const newManagerDoc = await Employee.findById(manager);
-      const previousDeptId = newManagerDoc?.employmentDetails?.department;
-
-      if (previousDeptId) {
-        // Remove manager from that previous department
-        await Department.findByIdAndUpdate(previousDeptId, { $unset: { manager: "" } });
-        // Remove department from manager's employmentDetails
-        await Employee.findByIdAndUpdate(manager, { $unset: { "employmentDetails.department": "" } });
-      }
-
-      // Remove current manager from this department
-      if (oldManagerId) {
-        await Employee.findByIdAndUpdate(oldManagerId, { $unset: { "employmentDetails.department": "" } });
-      }
-
-      // Assign this department to new manager
-      await Employee.findByIdAndUpdate(manager, {
-        "employmentDetails.department": department._id,
-      });
-      department.manager = manager;
-    }
-
+  
     // Update name/description
     if (name) department.name = name;
     if (description) department.description = description;
@@ -107,7 +92,8 @@ export const getDepartmentsByCompany = async (req, res) => {
       populate: {
         path: 'user', // this will populate employee's user
       }
-    });
+    })
+    .populate({ path: 'hr', populate: { path: 'user' } });
 
     return res.status(200).json({ success: true, data: departments });
   } catch (error) {
@@ -515,7 +501,7 @@ export const updateDetailsHRorManager = async (req, res) => {
   }
 };
 
-export const getAllHRsAndManagers = async (req, res) => {
+export const getAllHRs = async (req, res) => {
   try {
     // 1. Pagination params
     const page = parseInt(req.query.page) || 1;
@@ -536,19 +522,11 @@ export const getAllHRsAndManagers = async (req, res) => {
           model: 'User',
         },
       })
-      .populate({
-        path: 'manager',
-        populate: {
-          path: 'user',
-          model: 'User',
-        },
-      });
 
     // 4. Build department-wise structure
     const departmentWise = departments.map((dept) => {
       const hrUser = dept.hr?.user;
-      const managerUser = dept.manager?.user;
-
+    
       return {
         departmentId: dept._id,
         departmentName: dept.name,
@@ -560,6 +538,72 @@ export const getAllHRsAndManagers = async (req, res) => {
               userId: hrUser?._id,
             }
           : null,
+      };
+    });
+
+    // 5. Collect unique HRs and Managers from current page
+    const hrMap = new Map();
+    
+
+    departmentWise.forEach((dept) => {
+      if (dept.hr && !hrMap.has(dept.hr.employeeId.toString())) {
+        hrMap.set(dept.hr.employeeId.toString(), dept.hr);
+      }
+    
+    });
+
+    // 6. Final response with pagination info
+    return res.status(200).json({
+      message: "Fetched HRs and Managers successfully",
+      currentPage: page,
+      totalPages: Math.ceil(totalDepartments / limit),
+      totalDepartments,
+      pageSize: departmentWise.length,
+      allHRs: Array.from(hrMap.values()),
+     
+      departmentWise,
+    });
+  } catch (error) {
+    console.error("[GET_HRS_MANAGERS_ERROR]", error);
+    return res.status(500).json({
+      message: "Internal server error while fetching HRs and Managers",
+      error: error.message,
+    });
+  }
+};
+
+
+
+export const getAllManagers = async (req, res) => {
+  try {
+    // 1. Pagination params
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const skip = (page - 1) * limit;
+
+    // 2. Count total departments
+    const totalDepartments = await Department.countDocuments({company: req.params.companyId});
+
+    // 3. Fetch paginated departments and deeply populate hr → user & manager → user
+    const departments = await Department.find({company: req.params.companyId})
+      .skip(skip)
+      .limit(limit)
+      .populate({
+        path: 'manager',
+        populate: {
+          path: 'user',
+          model: 'User',
+        },
+      })
+
+    // 4. Build department-wise structure
+    const departmentWise = departments.map((dept) => {
+  
+      const managerUser = dept.manager?.user;
+
+      return {
+        departmentId: dept._id,
+        departmentName: dept.name,
         manager: dept.manager
           ? {
               employeeId: dept.manager._id,
@@ -572,13 +616,11 @@ export const getAllHRsAndManagers = async (req, res) => {
     });
 
     // 5. Collect unique HRs and Managers from current page
-    const hrMap = new Map();
+ 
     const managerMap = new Map();
 
     departmentWise.forEach((dept) => {
-      if (dept.hr && !hrMap.has(dept.hr.employeeId.toString())) {
-        hrMap.set(dept.hr.employeeId.toString(), dept.hr);
-      }
+
       if (dept.manager && !managerMap.has(dept.manager.employeeId.toString())) {
         managerMap.set(dept.manager.employeeId.toString(), dept.manager);
       }
@@ -591,7 +633,6 @@ export const getAllHRsAndManagers = async (req, res) => {
       totalPages: Math.ceil(totalDepartments / limit),
       totalDepartments,
       pageSize: departmentWise.length,
-      allHRs: Array.from(hrMap.values()),
       allManagers: Array.from(managerMap.values()),
       departmentWise,
     });
@@ -603,6 +644,7 @@ export const getAllHRsAndManagers = async (req, res) => {
     });
   }
 };
+
 
 
 export const getHRAndManagerByDepartment = async (req, res) => {

@@ -1,5 +1,8 @@
 import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
+import nodemailer from 'nodemailer';
+import dotenv from 'dotenv';
+dotenv.config();
 
 export const hashPassword = async (password) => {
   return await bcrypt.hash(password, 12);
@@ -35,9 +38,10 @@ export const createPasswordResetToken = () => {
   return { resetToken, passwordResetToken, passwordResetExpires };
 };
 
-import nodemailer from 'nodemailer';
-import dotenv from 'dotenv';
-dotenv.config();
+
+// Configure nodemailer transporter
+
+
 const transporter = nodemailer.createTransport({
   service: "gmail",
   auth: {

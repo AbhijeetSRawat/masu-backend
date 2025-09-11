@@ -1,5 +1,5 @@
 import express from "express"
-import { AssignHRorManager, createDepartment, editDepartment, getAllHRsAndManagers, getDepartmentsByCompany, getHRAndManagerByDepartment, updateDetailsHRorManager, updateHRorManager } from "../controllers/department-controller.js";
+import { AssignHRorManager, createDepartment, editDepartment, getAllHRs, getAllHRsAndManagers, getAllManagers, getDepartmentsByCompany, getHRAndManagerByDepartment, updateDetailsHRorManager, updateHRorManager } from "../controllers/department-controller.js";
 import { protect, restrictTo } from "../middleware/authMiddleware.js";
 
 
@@ -14,7 +14,8 @@ router.get("/getAll/:companyId", getDepartmentsByCompany) // Uncomment and imple
 router.post("/assignHrManager",protect, restrictTo("admin","superadmin","subadmin"), AssignHRorManager);
 router.put("/updateHrManager",protect,restrictTo("admin","superadmin","subadmin"), updateHRorManager);
 router.patch("/updateHRManagerDetails",protect,restrictTo("admin","superadmin","subadmin","hr","manager"), updateDetailsHRorManager);
-router.get("/getAll/:companyId",protect,restrictTo("admin","superadmin","subadmin","hr","manager"), getAllHRsAndManagers);
+router.get("/getAllHRs/:companyId",protect,restrictTo("admin","superadmin","subadmin","hr","manager"), getAllHRs);
+router.get("/getAllManagers/:companyId",protect,restrictTo("admin","superadmin","subadmin","hr","manager","employee"), getAllManagers);
 router.get("/getHRAndManager/:departmentId", protect, restrictTo("admin","superadmin","subadmin","hr","manager","employee"), getHRAndManagerByDepartment);
 
 export default router;

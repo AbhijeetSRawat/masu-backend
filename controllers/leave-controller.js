@@ -1,17 +1,14 @@
 import mongoose from 'mongoose';
 import Leave from '../models/Leave.js';
-import LeavePolicy from '../models/LeavePolicy.js';
+import Employee from '../models/Employee.js';
+import Department from '../models/Department.js';
 import { 
-  // businessDaysBetween, 
+  businessDaysBetween, 
   hasOverlappingLeaves, 
   validateLeaveType,
-  checkLeaveTypeLimits,
   getCompanyPolicy,
-  toYearFromPolicy,
   getPolicyYearStart,
-  getPolicyYearEnd,
-  getPolicyYearRange,
-  businessDaysBetween
+  getPolicyYearEnd
 } from '../services/leaveUtils.js';
 import uploadFileToCloudinary from '../utils/fileUploader.js';
 
@@ -31,25 +28,7 @@ const withTransaction = async (fn) => {
   }
 };
 
-
-
-const getMaxInstancesPerYear = async (companyId, shortCode) => {
-  const policy = await LeavePolicy.findOne(
-    { company: companyId, "leaveTypes.shortCode": shortCode.toUpperCase() },
-    { "leaveTypes.$": 1 } // only return the matching leaveType
-  );
-
-  if (!policy || !policy.leaveTypes.length) {
-    throw new Error(`Leave type ${shortCode} not found for this company`);
-  }
-
-  return policy.leaveTypes[0].maxInstancesPerYear; // ✅ your value
-};
-
-
-
-// validate leave type against policy
-
+// Apply for leave
 export const applyLeave = async (req, res) => {
   try {
     const leave = await withTransaction(async (session) => {
@@ -64,7 +43,7 @@ export const applyLeave = async (req, res) => {
         halfDayType = null,
       } = req.body;
 
-      // ensure boolean
+      // Validation and processing (same as before)
       isHalfDay = String(isHalfDay).toLowerCase() === "true";
 
       if (typeof leaveBreakup === "string") {
@@ -75,7 +54,6 @@ export const applyLeave = async (req, res) => {
         }
       }
 
-      // required fields
       if (!employeeId || !companyId || !startDate || !endDate || !reason) {
         throw new Error("Missing required fields");
       }
@@ -83,7 +61,6 @@ export const applyLeave = async (req, res) => {
         throw new Error("At least one leave type required");
       }
 
-      // validate half day
       if (isHalfDay && !["first-half", "second-half"].includes(halfDayType)) {
         throw new Error("Invalid half-day type");
       }
@@ -95,11 +72,19 @@ export const applyLeave = async (req, res) => {
         throw new Error("Half-day must be a single day");
       }
 
-      // get company policy
-      const policy = await LeavePolicy.findOne({ company: companyId });
-      if (!policy) throw new Error("Leave policy not found");
+      // Get employee department to determine manager and HR
+      const employee = await Employee.findById(employeeId)
+        .populate('employmentDetails.department');
+      
+      if (!employee) throw new Error("Employee not found");
+      
+      const departmentId = employee.employmentDetails.department;
+      const department = await Department.findById(departmentId)
+        .populate('manager hr');
+      
+      if (!department) throw new Error("Department not found");
 
-      // ---------------- FILE HANDLING ----------------
+      // File handling (same as before)
       let documentsArray = [];
       let filesToProcess = [];
       if (req.files) {
@@ -113,20 +98,14 @@ export const applyLeave = async (req, res) => {
           filesToProcess = [req.files];
         }
       }
+      
       if (filesToProcess.length > 0) {
         try {
           documentsArray = await Promise.all(
             filesToProcess.map(async (file, idx) => {
-              const originalFileName =
-                file.originalname || file.name || `Doc_${Date.now()}_${idx + 1}`;
-              const uploaded = await uploadFileToCloudinary(
-                file,
-                process.env.FOLDER_NAME
-              );
-              return {
-                name: originalFileName,
-                url: uploaded?.result?.secure_url,
-              };
+              const originalFileName = file.originalname || file.name || `Doc_${Date.now()}_${idx + 1}`;
+              const uploaded = await uploadFileToCloudinary(file, process.env.FOLDER_NAME);
+              return { name: originalFileName, url: uploaded?.result?.secure_url };
             })
           );
         } catch (err) {
@@ -135,20 +114,19 @@ export const applyLeave = async (req, res) => {
         }
       }
 
-      // ---------------- CALCULATE DAYS ----------------
-      let businessDays = isHalfDay
-        ? 0.5
-        : await businessDaysBetween({
-            companyId,
-            start: s,
-            end: e,
-            excludeHoliday: !policy.sandwichLeave,
-            includeWeekOff: policy.sandwichLeave,
-          });
+      // Calculate business days (same as before)
+      const policy = await getCompanyPolicy(companyId);
+      let businessDays = isHalfDay ? 0.5 : await businessDaysBetween({
+        companyId,
+        start: s,
+        end: e,
+        excludeHoliday: !policy.sandwichLeave,
+        includeWeekOff: policy.sandwichLeave
+      });
 
       if (businessDays <= 0) throw new Error("No business days in range");
 
-      // ---------------- VALIDATE BREAKUP ----------------
+      // Validate breakup and check overlaps (same as before)
       let totalDays = 0;
       for (const part of leaveBreakup) {
         if (!part.leaveType || !part.shortCode || !part.days) {
@@ -156,20 +134,14 @@ export const applyLeave = async (req, res) => {
         }
 
         const typeDef = validateLeaveType(policy, part.leaveType);
-
-        // min/max per request
         if (part.days > typeDef.maxPerRequest) {
-          throw new Error(
-            `${part.leaveType} exceeds max ${typeDef.maxPerRequest} days per request`
-          );
+          throw new Error(`${part.leaveType} exceeds max ${typeDef.maxPerRequest} days per request`);
         }
         if (part.days < typeDef.minPerRequest) {
-          throw new Error(
-            `${part.leaveType} requires min ${typeDef.minPerRequest} days`
-          );
+          throw new Error(`${part.leaveType} requires min ${typeDef.minPerRequest} days`);
         }
 
-        // yearly balance
+        // Yearly balance check
         const yearStart = getPolicyYearStart(policy.yearStartMonth);
         const yearEnd = getPolicyYearEnd(policy.yearStartMonth);
         const yearLeaves = await Leave.aggregate([
@@ -186,56 +158,19 @@ export const applyLeave = async (req, res) => {
           { $match: { "leaveBreakup.shortCode": part.shortCode } },
           { $group: { _id: null, total: { $sum: "$leaveBreakup.days" } } },
         ]);
+        
         const usedYear = yearLeaves.length > 0 ? yearLeaves[0].total : 0;
-        if (
-          typeDef.maxInstancesPerYear &&
-          usedYear + part.days > typeDef.maxInstancesPerYear
-        ) {
-          throw new Error(
-            `${part.leaveType} yearly balance exceeded. Remaining: ${
-              typeDef.maxInstancesPerYear - usedYear
-            }`
-          );
-        }
-
-        // monthly balance
-        const monthStart = new Date(s.getFullYear(), s.getMonth(), 1);
-        const monthEnd = new Date(s.getFullYear(), s.getMonth() + 1, 0);
-        const monthLeaves = await Leave.aggregate([
-          {
-            $match: {
-              employee: employeeId,
-              company: companyId,
-              "leaveBreakup.shortCode": part.shortCode,
-              status: { $in: ["approved", "pending"] },
-              startDate: { $gte: monthStart, $lte: monthEnd },
-            },
-          },
-          { $unwind: "$leaveBreakup" },
-          { $match: { "leaveBreakup.shortCode": part.shortCode } },
-          { $group: { _id: null, total: { $sum: "$leaveBreakup.days" } } },
-        ]);
-        const usedMonth = monthLeaves.length > 0 ? monthLeaves[0].total : 0;
-        if (
-          typeDef.maxInstancesPerMonth &&
-          usedMonth + part.days > typeDef.maxInstancesPerMonth
-        ) {
-          throw new Error(
-            `${part.leaveType} monthly balance exceeded. Remaining: ${
-              typeDef.maxInstancesPerMonth - usedMonth
-            }`
-          );
+        if (typeDef.maxInstancesPerYear && usedYear + part.days > typeDef.maxInstancesPerYear) {
+          throw new Error(`${part.leaveType} yearly balance exceeded. Remaining: ${typeDef.maxInstancesPerYear - usedYear}`);
         }
 
         totalDays += part.days;
       }
 
-    
-      // ---------------- CHECK OVERLAP ----------------
       const overlap = await hasOverlappingLeaves(employeeId, companyId, s, e);
       if (overlap) throw new Error("Overlapping leave exists");
 
-      // ---------------- CREATE LEAVE ----------------
+      // Create leave with approval flow
       const leaveData = {
         employee: employeeId,
         company: companyId,
@@ -248,33 +183,40 @@ export const applyLeave = async (req, res) => {
         isHalfDay,
         halfDayType: isHalfDay ? halfDayType : null,
         status: "pending",
+        currentApprovalLevel: "manager",
+        approvalFlow: {
+          manager: { status: "pending" },
+          hr: { status: "pending" },
+          admin: { status: "pending" }
+        }
       };
 
       const [newLeave] = await Leave.create([leaveData], { session });
-
-      // auto approve if no approval needed
+      
+      // Auto approve if no approval needed for all leave types
       let autoApprove = leaveBreakup.every((p) => {
         const def = validateLeaveType(policy, p.leaveType);
         return !def.requiresApproval;
       });
+      
       if (autoApprove) {
         newLeave.status = "approved";
-        newLeave.approvedBy = employeeId;
-        newLeave.approvedAt = new Date();
+        newLeave.currentApprovalLevel = "completed";
+        newLeave.approvalFlow.manager.status = "approved";
+        newLeave.approvalFlow.hr.status = "approved";
+        newLeave.approvalFlow.admin.status = "approved";
+        newLeave.approvalFlow.manager.approvedBy = employeeId;
+        newLeave.approvalFlow.hr.approvedBy = employeeId;
+        newLeave.approvalFlow.admin.approvedBy = employeeId;
+        newLeave.approvalFlow.manager.approvedAt = new Date();
+        newLeave.approvalFlow.hr.approvedAt = new Date();
+        newLeave.approvalFlow.admin.approvedAt = new Date();
         await newLeave.save({ session });
       }
 
       await newLeave.populate([
-        {
-        path: 'employee',
-        select: 'user',
-        populate:{
-          path: 'user',
-          select:'profile'
-        }
-      },
-        { path: "company", select: "name" },
-        { path: "approvedBy", select: "name email" },
+        { path: 'employee', select: 'user', populate: { path: 'user', select: 'profile' } },
+        { path: 'company', select: 'name' }
       ]);
 
       return newLeave;
@@ -282,11 +224,9 @@ export const applyLeave = async (req, res) => {
 
     res.status(201).json({
       success: true,
-
-      message:
-        leave.status === "approved"
-          ? "Leave auto-approved successfully"
-          : "Leave submitted for approval",
+      message: leave.status === "approved" 
+        ? "Leave auto-approved successfully" 
+        : "Leave submitted for manager approval",
       leave,
       documentsUploaded: leave.documents ? leave.documents.length : 0,
     });
@@ -296,277 +236,278 @@ export const applyLeave = async (req, res) => {
   }
 };
 
-
-// export const approveLeave = async (req, res) => {
-//   try {
-//     const { id } = req.params;
-//     const approverId = req.user._id; // From auth middleware
-//     const { comment } = req.body;
-
-//     const leave = await withTransaction(async (session) => {
-//       const leaveDoc = await Leave.findById(id).session(session);
-//       if (!leaveDoc) {
-//         throw new Error('Leave not found');
-//       }
-
-//       if (leaveDoc.status !== 'pending') {
-//         throw new Error('Leave is not pending approval');
-//       }
-
-//       // Get policy to check if approval is needed
-//       const policy = await getCompanyPolicy(leaveDoc.company);
-//       const typeDef = validateLeaveType(policy, leaveDoc.leaveType);
-
-//       // For types that don't require approval, just return as is
-//       if (!typeDef.requiresApproval) {
-//         return leaveDoc;
-//       }
-
-//       // Approve the leave
-//       leaveDoc.status = 'approved';
-//       leaveDoc.approvedBy = approverId;
-//       leaveDoc.approvedAt = new Date();
-//       leaveDoc.comment = comment || '';
-//       await leaveDoc.save({ session });
-
-//       return leaveDoc;
-//     });
-
-//     res.json({ 
-//       success: true, 
-//       message: 'Leave approved successfully',
-//       leave 
-//     });
-//   } catch (error) {
-//     res.status(400).json({ 
-//       success: false, 
-//       message: error.message 
-//     });
-//   }
-// };
-
-// export const rejectLeave = async (req, res) => {
-//   try {
-//     const { id } = req.params;
-//     const { reason } = req.body;
-//     const rejectorId = req.user._id; // From auth middleware
-
-//     if (!reason) {
-//       throw new Error('Rejection reason is required');
-//     }
-
-//     const leave = await Leave.findByIdAndUpdate(
-//       id,
-//       { 
-//         status: 'rejected',
-//         rejectionReason: reason,
-//         approvedAt: new Date(),
-//         rejectedBy: rejectorId
-//       },
-//       { new: true }
-//     );
-
-//     if (!leave) {
-//       throw new Error('Leave not found');
-//     }
-
-//     res.json({ 
-//       success: true, 
-//       message: 'Leave rejected successfully',
-//       leave 
-//     });
-//   } catch (error) {
-//     res.status(400).json({ 
-//       success: false, 
-//       message: error.message 
-//     });
-//   }
-// };
-
-// export const cancelLeave = async (req, res) => {
-//   try {
-//     const { id } = req.params;
-//     const employeeId = req.user._id; // From auth middleware
-
-//     const leave = await Leave.findOneAndUpdate(
-//       { 
-//         _id: id,
-//        // employee: employeeId,
-//         status: { $in: ['pending', 'approved'] } 
-//       },
-//       { status: 'cancelled' },
-//       { new: true }
-//     );
-
-//     if (!leave) {
-//       throw new Error('Leave not found or cannot be cancelled');
-//     }
-
-//     res.json({ 
-//       success: true, 
-//       message: 'Leave cancelled successfully',
-//       leave 
-//     });
-//   } catch (error) {
-//     console.log(error)
-//     res.status(400).json({ 
-//       success: false, 
-//       message: error.message 
-//     });
-//   }
-// };
-
-// export const getEmployeeLeaves = async (req, res) => {
-//   try {
-//     const { employeeId, companyId } = req.params;
-//     const { status, year, leaveType } = req.query;
-
-//     let query = { 
-//       employee: employeeId, 
-//       company: companyId 
-//     };
-
-//     if (status) {
-//       query.status = status;
-//     }
-
-//     if (year) {
-//       const policy = await getCompanyPolicy(companyId);
-//       const yearStartMonth = policy?.yearStartMonth || 1;
-//       const start = new Date(year, yearStartMonth - 1, 1);
-//       const end = new Date(parseInt(year) + 1, yearStartMonth - 1, 0);
-      
-//       query.startDate = { $gte: start, $lte: end };
-//     }
-
-//     if (leaveType) {
-//       query.leaveType = leaveType;
-//     }
-
-//     const leaves = await Leave.find(query)
-//       .sort({ startDate: -1 })
-//       .populate('approvedBy rejectedBy', "profile email");
-
-//     res.json({ 
-//       success: true, 
-//       count: leaves.length,
-//       leaves 
-//     });
-//   } catch (error) {
-//     res.status(400).json({ 
-//       success: false, 
-//       message: error.message 
-//     });
-//   }
-// };
-
-
-// ✅ Approve Leave
-
-
-export const approveLeave = async (req, res) => {
+// Manager approval
+export const managerApprove = async (req, res) => {
   try {
     const { id } = req.params;
-    const approverId = req.user._id; // From auth middleware
+    const managerId = req.user._id;
     const { comment } = req.body;
 
     const leave = await withTransaction(async (session) => {
       const leaveDoc = await Leave.findById(id).session(session);
-      if (!leaveDoc) {
-        throw new Error("Leave not found");
+      if (!leaveDoc) throw new Error("Leave not found");
+      
+      if (leaveDoc.currentApprovalLevel !== "manager") {
+        throw new Error("Leave is not awaiting manager approval");
       }
 
-      if (leaveDoc.status !== "pending") {
-        throw new Error("Leave is not pending approval");
+      if (leaveDoc.approvalFlow.manager.status !== "pending") {
+        throw new Error("Manager has already acted on this leave");
       }
 
-      // Get policy + validate
-      const policy = await getCompanyPolicy(leaveDoc.company);
-
-      // Check all leave types inside leaveBreakup
-      leaveDoc.leaveBreakup.forEach((l) => {
-        const typeDef = validateLeaveType(policy, l.leaveType);
-        if (typeDef.requiresApproval === false) {
-          // If any type doesn’t require approval → skip
-          return leaveDoc;
-        }
-      });
-
-      // ✅ Approve leave
-      leaveDoc.status = "approved";
-      leaveDoc.approvedBy = approverId;
-      leaveDoc.approvedAt = new Date();
-      leaveDoc.comment = comment || "";
-
+      // Update manager approval
+      leaveDoc.approvalFlow.manager.status = "approved";
+      leaveDoc.approvalFlow.manager.approvedBy = managerId;
+      leaveDoc.approvalFlow.manager.approvedAt = new Date();
+      leaveDoc.approvalFlow.manager.comment = comment || "";
+      
+      // Move to next level (HR)
+      leaveDoc.currentApprovalLevel = "hr";
+      
       await leaveDoc.save({ session });
       return leaveDoc;
     });
 
     res.json({
       success: true,
-      message: "Leave approved successfully",
-      leave,
+      message: "Leave approved by manager and sent to HR",
+      leave
     });
   } catch (error) {
-    res.status(400).json({
-      success: false,
-      message: error.message,
-    });
+    res.status(400).json({ success: false, message: error.message });
   }
 };
 
-// ✅ Reject Leave
-export const rejectLeave = async (req, res) => {
+// HR approval
+export const hrApprove = async (req, res) => {
   try {
     const { id } = req.params;
-    const { reason } = req.body;
-    const rejectorId = req.user._id; // From auth middleware
+    const hrId = req.user._id;
+    const { comment } = req.body;
 
-    if (!reason) {
-      throw new Error("Rejection reason is required");
-    }
+    const leave = await withTransaction(async (session) => {
+      const leaveDoc = await Leave.findById(id).session(session);
+      if (!leaveDoc) throw new Error("Leave not found");
+      
+      if (leaveDoc.currentApprovalLevel !== "hr") {
+        throw new Error("Leave is not awaiting HR approval");
+      }
 
-    const leave = await Leave.findByIdAndUpdate(
-      id,
-      {
-        status: "rejected",
-        rejectionReason: reason,
-        rejectedBy: rejectorId,
-        rejectedAt: new Date(),
-      },
-      { new: true }
-    );
+      if (leaveDoc.approvalFlow.hr.status !== "pending") {
+        throw new Error("HR has already acted on this leave");
+      }
 
-    if (!leave) {
-      throw new Error("Leave not found");
-    }
+      // Update HR approval
+      leaveDoc.approvalFlow.hr.status = "approved";
+      leaveDoc.approvalFlow.hr.approvedBy = hrId;
+      leaveDoc.approvalFlow.hr.approvedAt = new Date();
+      leaveDoc.approvalFlow.hr.comment = comment || "";
+      
+      // Move to next level (Admin)
+      leaveDoc.currentApprovalLevel = "admin";
+      
+      await leaveDoc.save({ session });
+      return leaveDoc;
+    });
 
     res.json({
       success: true,
-      message: "Leave rejected successfully",
-      leave,
+      message: "Leave approved by HR and sent to Admin",
+      leave
     });
   } catch (error) {
-    res.status(400).json({
-      success: false,
-      message: error.message,
-    });
+    res.status(400).json({ success: false, message: error.message });
   }
 };
 
-// ✅ Cancel Leave
+// Admin approval (final)
+export const adminApprove = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const adminId = req.user._id;
+    const { comment } = req.body;
+
+    const leave = await withTransaction(async (session) => {
+      const leaveDoc = await Leave.findById(id).session(session);
+      if (!leaveDoc) throw new Error("Leave not found");
+      
+      if (leaveDoc.currentApprovalLevel !== "admin") {
+        throw new Error("Leave is not awaiting admin approval");
+      }
+
+      if (leaveDoc.approvalFlow.admin.status !== "pending") {
+        throw new Error("Admin has already acted on this leave");
+      }
+
+      // Update admin approval
+      leaveDoc.approvalFlow.admin.status = "approved";
+      leaveDoc.approvalFlow.admin.approvedBy = adminId;
+      leaveDoc.approvalFlow.admin.approvedAt = new Date();
+      leaveDoc.approvalFlow.admin.comment = comment || "";
+      
+      // Complete the approval process
+      leaveDoc.status = "approved";
+      leaveDoc.currentApprovalLevel = "completed";
+      
+      await leaveDoc.save({ session });
+      return leaveDoc;
+    });
+
+    res.json({
+      success: true,
+      message: "Leave approved by Admin",
+      leave
+    });
+  } catch (error) {
+    res.status(400).json({ success: false, message: error.message });
+  }
+};
+
+// Reject at any level
+export const rejectLeave = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user._id;
+    const { reason, level } = req.body;
+
+    if (!reason) throw new Error("Rejection reason is required");
+    if (!["manager", "hr", "admin"].includes(level)) {
+      throw new Error("Invalid approval level");
+    }
+
+    const leave = await withTransaction(async (session) => {
+      const leaveDoc = await Leave.findById(id).session(session);
+      if (!leaveDoc) throw new Error("Leave not found");
+      
+      if (leaveDoc.currentApprovalLevel !== level) {
+        throw new Error(`Leave is not awaiting ${level} approval`);
+      }
+
+      if (leaveDoc.approvalFlow[level].status !== "pending") {
+        throw new Error(`${level} has already acted on this leave`);
+      }
+
+      // Update rejection at the current level
+      leaveDoc.approvalFlow[level].status = "rejected";
+      leaveDoc.approvalFlow[level].approvedBy = userId;
+      leaveDoc.approvalFlow[level].approvedAt = new Date();
+      leaveDoc.approvalFlow[level].comment = reason;
+      
+      // Set overall leave status to rejected
+      leaveDoc.status = "rejected";
+      leaveDoc.rejectedBy = userId;
+      leaveDoc.rejectionReason = reason;
+      
+      await leaveDoc.save({ session });
+      return leaveDoc;
+    });
+
+    res.json({
+      success: true,
+      message: `Leave rejected by ${level}`,
+      leave
+    });
+  } catch (error) {
+    res.status(400).json({ success: false, message: error.message });
+  }
+};
+
+// Get leaves pending at specific level
+export const getPendingLeavesByLevel = async (req, res) => {
+  try {
+    const { level } = req.params;
+    const userId = req.user._id;
+    
+    if (!["manager", "hr", "admin"].includes(level)) {
+      return res.status(400).json({ success: false, message: "Invalid level" });
+    }
+
+    // For manager level, get leaves where employee's department manager is the current user
+    let query = { 
+      [`approvalFlow.${level}.status`]: "pending",
+      currentApprovalLevel: level
+    };
+
+    if (level === "manager") {
+      // Get departments where user is manager
+      const managedDepartments = await Department.find({ manager: userId }).select('_id');
+      const departmentIds = managedDepartments.map(d => d._id);
+      
+      // Get employees in those departments
+      const employees = await Employee.find({ 
+        'employmentDetails.department': { $in: departmentIds } 
+      }).select('_id');
+      
+      const employeeIds = employees.map(e => e._id);
+      
+      query.employee = { $in: employeeIds };
+    } else if (level === "hr") {
+      // Get departments where user is HR
+      const hrDepartments = await Department.find({ hr: userId }).select('_id');
+      const departmentIds = hrDepartments.map(d => d._id);
+      
+      // Get employees in those departments
+      const employees = await Employee.find({ 
+        'employmentDetails.department': { $in: departmentIds } 
+      }).select('_id');
+      
+      const employeeIds = employees.map(e => e._id);
+      
+      query.employee = { $in: employeeIds };
+    }
+    // For admin, no additional filtering needed
+
+    const { page = 1, limit = 10 } = req.query;
+    const skip = (page - 1) * limit;
+
+    const total = await Leave.countDocuments(query);
+    const leaves = await Leave.find(query)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(Number(limit))
+      .populate({
+        path: 'employee',
+        select: 'user employmentDetails',
+        populate: [
+          { path: 'user', select: 'profile' },
+          { path: 'employmentDetails.department', select: 'name' }
+        ]
+      })
+      .populate('company', 'name');
+
+    res.json({
+      success: true,
+      total,
+      page: Number(page),
+      totalPages: Math.ceil(total / limit),
+      count: leaves.length,
+      leaves
+    });
+  } catch (error) {
+    res.status(400).json({ success: false, message: error.message });
+  }
+};
+
+// Cancel leave (only by employee or admin)
 export const cancelLeave = async (req, res) => {
   try {
     const { id } = req.params;
-    const employeeId = req.user._id; // From auth middleware
+    const userId = req.user._id;
+    const userRole = req.user.role;
 
     const leave = await Leave.findOneAndUpdate(
       {
         _id: id,
-    
-        status: { $in: ["pending", "approved"] },
+        $or: [
+          { employee: userId },
+          { userRole: 'admin' }
+        ],
+        status: { $in: ["pending", "approved"] }
       },
-      { status: "cancelled", cancelledAt: new Date() },
+      { 
+        status: "cancelled",
+        cancelledAt: new Date()
+      },
       { new: true }
     );
 
@@ -577,179 +518,168 @@ export const cancelLeave = async (req, res) => {
     res.json({
       success: true,
       message: "Leave cancelled successfully",
-      leave,
+      leave
     });
   } catch (error) {
-    res.status(400).json({
-      success: false,
-      message: error.message,
-    });
+    res.status(400).json({ success: false, message: error.message });
   }
 };
 
 
+
+// Other existing functions...
+
+
 export const bulkUpdateLeaves = async (req, res) => {
   try {
-    const { ids, action, comment, reason } = req.body;
-    const userId = req.user._id; // approver/rejector/canceller from auth
+    const { ids, action, level, comment, reason } = req.body;
+    const userId = req.user._id;
+    const userRole = req.user.role;
 
     if (!ids || !Array.isArray(ids) || ids.length === 0) {
       return res.status(400).json({ success: false, message: "Leave IDs are required" });
     }
 
-    if (!["approve", "reject", "cancel"].includes(action)) {
-      return res.status(400).json({ success: false, message: "Invalid action" });
+    if (!["approve", "reject"].includes(action)) {
+      return res.status(400).json({ success: false, message: "Invalid action. Use 'approve' or 'reject'" });
     }
 
-    let updateData = {};
-    if (action === "approve") {
-      updateData = {
-        status: "approved",
-        approvedBy: userId,
-        approvedAt: new Date(),
-        comment: comment || "",
-      };
-    } else if (action === "reject") {
-      if (!reason) {
-        return res.status(400).json({ success: false, message: "Rejection reason is required" });
+    if (!["manager", "hr", "admin"].includes(level)) {
+      return res.status(400).json({ success: false, message: "Invalid level. Use 'manager', 'hr', or 'admin'" });
+    }
+
+    // Validate user has permission for this level
+    if (level === 'manager' && userRole !== 'manager') {
+      return res.status(403).json({ success: false, message: "Only managers can perform bulk actions at manager level" });
+    }
+    if (level === 'hr' && userRole !== 'hr') {
+      return res.status(403).json({ success: false, message: "Only HR can perform bulk actions at HR level" });
+    }
+    if (level === 'admin' && !['admin', 'superadmin'].includes(userRole)) {
+      return res.status(403).json({ success: false, message: "Only admins can perform bulk actions at admin level" });
+    }
+
+    if (action === "reject" && !reason) {
+      return res.status(400).json({ success: false, message: "Rejection reason is required" });
+    }
+
+    const session = await mongoose.startSession();
+    session.startTransaction();
+
+    try {
+      // First, validate all leaves are at the correct level and pending
+      const leaves = await Leave.find({ 
+        _id: { $in: ids },
+        currentApprovalLevel: level,
+        [`approvalFlow.${level}.status`]: 'pending'
+      }).session(session);
+
+      if (leaves.length !== ids.length) {
+        const invalidLeaves = ids.length - leaves.length;
+        throw new Error(`${invalidLeaves} leaves are not eligible for ${level} ${action}. They may already be processed or at a different level.`);
       }
-      updateData = {
-        status: "rejected",
-        rejectionReason: reason,
-        rejectedBy: userId,
-        rejectedAt: new Date(),
-      };
-    } else if (action === "cancel") {
-      updateData = {
-        status: "cancelled",
-        cancelledAt: new Date(),
-      };
-    }
 
-    // Update in bulk
-    await Leave.updateMany(
-      { _id: { $in: ids } },
-      { $set: updateData }
-    );
-
-    // Fetch updated documents
-    const updatedLeaves = await Leave.find({ _id: { $in: ids } });
-
-    res.json({
-      success: true,
-      message: `Leaves ${action}d successfully`,
-      count: updatedLeaves.length,
-      data: updatedLeaves,
-    });
-  } catch (error) {
-    console.error(error);
-    res.status(400).json({
-      success: false,
-      message: error.message,
-    });
-  }
-};
-
-
-
-export const getEmployeeLeaves = async (req, res) => {
-  try {
-    const { employeeId, companyId } = req.params;
-    const { status, year, leaveType, shortCode } = req.query;
-
-    let query = {
-      employee: employeeId,
-      company: companyId
-    };
-
-    // ✅ filter by status
-    if (status) {
-      query.status = status;
-    }
-
-    // ✅ filter by policy year
-    if (year) {
-      const policy = await getCompanyPolicy(companyId);
-      const yearStartMonth = policy?.yearStartMonth || 1;
-
-      const start = new Date(year, yearStartMonth - 1, 1); 
-      // 👆 first day of policy year
-      const end = new Date(parseInt(year) + 1, yearStartMonth - 1, 0); 
-      // 👆 last day before next policy year
-
-      query.startDate = { $gte: start, $lte: end };
-    }
-
-    // ✅ filter by leave type (inside breakup array)
-    if (leaveType) {
-      query["leaveBreakup.leaveType"] = leaveType; 
-    }
-
-    // ✅ optional filter by shortCode
-    if (shortCode) {
-      query["leaveBreakup.shortCode"] = shortCode;
-    }
-
-    const leaves = await Leave.find(query)
-      .sort({ startDate: -1 })
-      .populate("approvedBy rejectedBy", "profile email")
-      .populate({
-        path: 'employee',
-        select: 'user',
-        populate:{
-          path: 'user',
-          select:'profile'
+      // Check if user has permission to act on these leaves (department-based for manager/hr)
+      if (['manager', 'hr'].includes(level)) {
+        const departmentField = level === 'manager' ? 'manager' : 'hr';
+        
+        // Get departments where user has the role
+        const userDepartments = await Department.find({ [departmentField]: userId }).select('_id').session(session);
+        const departmentIds = userDepartments.map(d => d._id);
+        
+        // Get employees in those departments
+        const employees = await Employee.find({ 
+          'employmentDetails.department': { $in: departmentIds } 
+        }).select('_id').session(session);
+        
+        const authorizedEmployeeIds = employees.map(e => e._id);
+        
+        // Check if all leaves belong to authorized employees
+        const unauthorizedLeaves = leaves.filter(leave => 
+          !authorizedEmployeeIds.includes(leave.employee.toString())
+        );
+        
+        if (unauthorizedLeaves.length > 0) {
+          throw new Error(`You are not authorized to act on ${unauthorizedLeaves.length} leaves. They are not from your department.`);
         }
-      })
-      .populate("company", "name");
+      }
 
-    res.json({
-      success: true,
-      count: leaves.length,
-      leaves
-    });
-  } catch (error) {
-    console.error("Get Employee Leaves Error:", error);
-    res.status(400).json({
-      success: false,
-      message: error.message
-    });
-  }
-};
+      let updatePromises = [];
 
-export const getLeavesForCompany = async (req, res) => {
-  const { companyId } = req.params;
-  const { page = 1, limit = 10 } = req.query; // default values
-
-  try {
-    const skip = (page - 1) * limit;
-
-    // Total count before pagination
-    const total = await Leave.countDocuments({ company: companyId });
-
-    // Paginated and sorted (-1 for descending)
-    const leaves = await Leave.find({ company: companyId })
-      .sort({ _id: -1 }) // descending order
-      .skip(skip)
-      .limit(Number(limit))
-      .populate({
-        path: 'employee',
-        select: 'user',
-        populate:{
-          path: 'user',
-          select:'profile'
+      if (action === "approve") {
+        if (level === 'admin') {
+          // Final approval - update all levels and mark as completed
+          updatePromises = leaves.map(leave => 
+            Leave.findByIdAndUpdate(
+              leave._id,
+              {
+                [`approvalFlow.${level}.status`]: 'approved',
+                [`approvalFlow.${level}.approvedBy`]: userId,
+                [`approvalFlow.${level}.approvedAt`]: new Date(),
+                [`approvalFlow.${level}.comment`]: comment || '',
+                status: 'approved',
+                currentApprovalLevel: 'completed'
+              },
+              { new: true, session }
+            )
+          );
+        } else {
+          // Intermediate approval - move to next level
+          const nextLevel = level === 'manager' ? 'hr' : 'admin';
+          updatePromises = leaves.map(leave => 
+            Leave.findByIdAndUpdate(
+              leave._id,
+              {
+                [`approvalFlow.${level}.status`]: 'approved',
+                [`approvalFlow.${level}.approvedBy`]: userId,
+                [`approvalFlow.${level}.approvedAt`]: new Date(),
+                [`approvalFlow.${level}.comment`]: comment || '',
+                currentApprovalLevel: nextLevel
+              },
+              { new: true, session }
+            )
+          );
         }
+      } else if (action === "reject") {
+        // Rejection at any level
+        updatePromises = leaves.map(leave => 
+          Leave.findByIdAndUpdate(
+            leave._id,
+            {
+              [`approvalFlow.${level}.status`]: 'rejected',
+              [`approvalFlow.${level}.approvedBy`]: userId,
+              [`approvalFlow.${level}.approvedAt`]: new Date(),
+              [`approvalFlow.${level}.comment`]: reason,
+              status: 'rejected',
+              rejectedBy: userId,
+              rejectionReason: reason,
+              currentApprovalLevel: 'completed' // Stop the approval flow
+            },
+            { new: true, session }
+          )
+        );
+      }
+
+      const updatedLeaves = await Promise.all(updatePromises);
+
+      await session.commitTransaction();
+      session.endSession();
+
+      res.json({
+        success: true,
+        message: `${leaves.length} leaves ${action}d successfully at ${level} level`,
+        count: leaves.length,
+        data: updatedLeaves,
       });
 
-    res.json({
-      success: true,
-      total,
-      page: Number(page),
-      totalPages: Math.ceil(total / limit),
-      count: leaves.length,
-      leaves,
-    });
+    } catch (error) {
+      await session.abortTransaction();
+      session.endSession();
+      throw error;
+    }
+
   } catch (error) {
+    console.error("Bulk Update Leaves Error:", error);
     res.status(400).json({
       success: false,
       message: error.message,
@@ -758,127 +688,6 @@ export const getLeavesForCompany = async (req, res) => {
 };
 
 
-export const getApprovedLeavesForCompany = async (req, res) => {
-  const { companyId } = req.params;
-  const { page = 1, limit = 10 } = req.query; // default values
-
-  try {
-    const skip = (page - 1) * limit;
-
-    // Total count before pagination
-    const total = await Leave.countDocuments({ company: companyId });
-
-    // Paginated and sorted (-1 for descending)
-    const leaves = await Leave.find({ company: companyId , status: 'approved' })
-      .sort({ _id: -1 }) // descending order
-      .skip(skip)
-      .limit(Number(limit))
-      .populate("approvedBy", "profile email")
-      .populate({
-        path: 'employee',
-        select: 'user',
-        populate:{
-          path: 'user',
-          select:'profile email'
-        }
-      });
-
-    res.json({
-      success: true,
-      total,
-      page: Number(page),
-      totalPages: Math.ceil(total / limit),
-      count: leaves.length,
-      leaves,
-    });
-  } catch (error) {
-    res.status(400).json({
-      success: false,
-      message: error.message,
-    });
-  }
-};
-
-export const getRejectedLeavesForCompany = async (req, res) => {
-  const { companyId } = req.params;
-  const { page = 1, limit = 10 } = req.query; // default values
-
-  try {
-    const skip = (page - 1) * limit;
-
-    // Total count before pagination
-    const total = await Leave.countDocuments({ company: companyId });
-
-    // Paginated and sorted (-1 for descending)
-    const leaves = await Leave.find({ company: companyId , status: 'rejected' })
-      .sort({ _id: -1 }) // descending order
-      .skip(skip)
-      .limit(Number(limit))
-       .populate("rejectedBy", "profile email")
-       .populate({
-        path: 'employee',
-        select: 'user',
-        populate:{
-          path: 'user',
-          select:'profile email'
-        }
-      });
-
-    res.json({
-      success: true,
-      total,
-      page: Number(page),
-      totalPages: Math.ceil(total / limit),
-      count: leaves.length,
-      leaves,
-    });
-  } catch (error) {
-    res.status(400).json({
-      success: false,
-      message: error.message,
-    });
-  }
-};
-
-export const getPendingLeavesForCompany = async (req, res) => {
-  const { companyId } = req.params;
-  const { page = 1, limit = 10 } = req.query; // default values
-
-  try {
-    const skip = (page - 1) * limit;
-
-    // Total count before pagination
-    const total = await Leave.countDocuments({ company: companyId });
-
-    // Paginated and sorted (-1 for descending)
-    const leaves = await Leave.find({ company: companyId , status: 'pending' })
-      .sort({ _id: -1 }) // descending order
-      .skip(skip)
-      .limit(Number(limit))
-       .populate({
-        path: 'employee',
-        select: 'user',
-        populate:{
-          path: 'user',
-          select:'profile email'
-        }
-      });
-
-    res.json({
-      success: true,
-      total,
-      page: Number(page),
-      totalPages: Math.ceil(total / limit),
-      count: leaves.length,
-      leaves,
-    });
-  } catch (error) {
-    res.status(400).json({
-      success: false,
-      message: error.message,
-    });
-  }
-};
 
 export const getCancelledLeavesForCompany = async (req, res) => {
   const { companyId } = req.params;
@@ -921,115 +730,430 @@ export const getCancelledLeavesForCompany = async (req, res) => {
 };
 
 
-// export const getRestLeaveOfEmployee = async (req,res) =>{
-//           const {employeeId} = req.params;
-//           const { year = new Date().getFullYear() } = req.query;
 
-//           try {
-//             // Get all leaves for the year
-//             const yearStart = new Date(year, 0, 1);
-//             const yearEnd = new Date(year, 11, 31);
-
-//             const leaves = await Leave.find({
-//               employee: employeeId,
-//               startDate: { $gte: yearStart, $lte: yearEnd }
-//             });
-
-//             // Manual count calculation
-//   const summary = leaves.reduce((acc, leave) => {
-//   const leaveType = leave.leaveType; // 👈 correct field name from schema
-
-//   if (!acc[leaveType]) {
-//     acc[leaveType] = {
-//       approved: { count: 0, days: 0 },
-//       rejected: { count: 0, days: 0 },
-//       pending: { count: 0, days: 0 },
-//       cancelled: { count: 0, days: 0 },
-//       totalDays: 0
-//     };
-//   }
-
-//   acc[leaveType][leave.status].count += 1;
-//   acc[leaveType][leave.status].days += leave.days;
-//   acc[leaveType].totalDays += leave.days;
-
-//   return acc;
-// }, {});
-
-
-
-
-
-//             res.json({
-//               success: true,
-//               summary,
-//               year: parseInt(year),
-
-//             });
-
-//           } catch (error) {
-//             res.status(500).json({
-//               success: false,
-//               message: error.message
-//             });
-//           }
-// };
-
-export const getRestLeaveOfEmployee = async (req, res) => {
-  const { employeeId } = req.params;
-  const { year = new Date().getFullYear() } = req.query;
-
+// Get leaves for manager (leaves from their department employees)
+export const getLeavesForManager = async (req, res) => {
   try {
-    // Get all leaves for the year
-    const yearStart = new Date(year, 0, 1);
-    const yearEnd = new Date(year, 11, 31);
+    const managerId = req.user._id;
+    const { status, page = 1, limit = 10, search } = req.query;
 
-    const leaves = await Leave.find({
-      employee: employeeId,
-      startDate: { $gte: yearStart, $lte: yearEnd }
-    });
+    // Get departments managed by this user
+    const managedDepartments = await Department.find({ manager: managerId }).select('_id');
+    const departmentIds = managedDepartments.map(d => d._id);
+    
+    // Get employees in those departments
+    const employees = await Employee.find({ 
+      'employmentDetails.department': { $in: departmentIds } 
+    }).select('_id user');
+    
+    const employeeIds = employees.map(e => e._id);
 
-    // Summary object
-    const summary = {};
+    // Build query
+    let query = { employee: { $in: employeeIds } };
+    
+    // Filter by status if provided
+    if (status && status !== 'all') {
+      query.status = status;
+    }
+    
+    // Search by employee name if provided
+    if (search) {
+      const employeeUsers = await Employee.find({
+        $or: [
+          { 'user.profile.firstName': { $regex: search, $options: 'i' } },
+          { 'user.profile.lastName': { $regex: search, $options: 'i' } }
+        ]
+      }).select('_id');
+      
+      const searchedEmployeeIds = employeeUsers.map(e => e._id);
+      query.employee = { $in: searchedEmployeeIds };
+    }
 
-    leaves.forEach((leave) => {
-      const status = leave.status; // approved / rejected / pending / cancelled
+    const skip = (page - 1) * limit;
+    const total = await Leave.countDocuments(query);
 
-      // Each leave can have multiple breakup items (e.g., 2 CL + 3 PL)
-      leave.leaveBreakup.forEach((item) => {
-        const { leaveType, shortCode, days } = item;
-
-        if (!summary[leaveType]) {
-          summary[leaveType] = {
-            approved: { count: 0, days: 0 },
-            rejected: { count: 0, days: 0 },
-            pending: { count: 0, days: 0 },
-            cancelled: { count: 0, days: 0 },
-            totalDays: 0,
-            shortCode
-          };
-        }
-
-        // increment counts by status
-        summary[leaveType][status].count += 1;
-        summary[leaveType][status].days += days;
-
-        // always add total days (irrespective of status)
-        summary[leaveType].totalDays += days;
-      });
-    });
+    const leaves = await Leave.find(query)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(Number(limit))
+      .populate({
+        path: 'employee',
+        select: 'user employmentDetails',
+        populate: [
+          { 
+            path: 'user', 
+            select: 'profile email',
+            populate: {
+              path: 'profile',
+              select: 'firstName lastName avatar designation'
+            }
+          },
+          { 
+            path: 'employmentDetails.department', 
+            select: 'name' 
+          }
+        ]
+      })
+      .populate('company', 'name')
+      .populate('approvalFlow.manager.approvedBy', 'profile email')
+      .populate('approvalFlow.hr.approvedBy', 'profile email')
+      .populate('approvalFlow.admin.approvedBy', 'profile email');
 
     res.json({
       success: true,
-      employeeId,
-      year: parseInt(year),
-      summary
+      total,
+      page: Number(page),
+      totalPages: Math.ceil(total / limit),
+      count: leaves.length,
+      leaves
     });
   } catch (error) {
-    console.error("getRestLeaveOfEmployee Error:", error);
-    res.status(500).json({
-      success: false,
-      message: error.message
+    res.status(400).json({ success: false, message: error.message });
+  }
+};
+
+// Get leaves for HR (leaves from their department employees)
+export const getLeavesForHR = async (req, res) => {
+  try {
+    const hrId = req.user._id;
+    const { status, page = 1, limit = 10, search } = req.query;
+
+    // Get departments where user is HR
+    const hrDepartments = await Department.find({ hr: hrId }).select('_id');
+    const departmentIds = hrDepartments.map(d => d._id);
+    
+    // Get employees in those departments
+    const employees = await Employee.find({ 
+      'employmentDetails.department': { $in: departmentIds } 
+    }).select('_id user');
+    
+    const employeeIds = employees.map(e => e._id);
+
+    // Build query
+    let query = { employee: { $in: employeeIds } };
+    
+    // Filter by status if provided
+    if (status && status !== 'all') {
+      query.status = status;
+    }
+    
+    // Search by employee name if provided
+    if (search) {
+      const employeeUsers = await Employee.find({
+        $or: [
+          { 'user.profile.firstName': { $regex: search, $options: 'i' } },
+          { 'user.profile.lastName': { $regex: search, $options: 'i' } }
+        ]
+      }).select('_id');
+      
+      const searchedEmployeeIds = employeeUsers.map(e => e._id);
+      query.employee = { $in: searchedEmployeeIds };
+    }
+
+    const skip = (page - 1) * limit;
+    const total = await Leave.countDocuments(query);
+
+    const leaves = await Leave.find(query)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(Number(limit))
+      .populate({
+        path: 'employee',
+        select: 'user employmentDetails',
+        populate: [
+          { 
+            path: 'user', 
+            select: 'profile email',
+            populate: {
+              path: 'profile',
+              select: 'firstName lastName avatar designation'
+            }
+          },
+          { 
+            path: 'employmentDetails.department', 
+            select: 'name' 
+          }
+        ]
+      })
+      .populate('company', 'name')
+      .populate('approvalFlow.manager.approvedBy', 'profile email')
+      .populate('approvalFlow.hr.approvedBy', 'profile email')
+      .populate('approvalFlow.admin.approvedBy', 'profile email');
+
+    res.json({
+      success: true,
+      total,
+      page: Number(page),
+      totalPages: Math.ceil(total / limit),
+      count: leaves.length,
+      leaves
     });
+  } catch (error) {
+    res.status(400).json({ success: false, message: error.message });
+  }
+};
+
+// Get leaves for admin (all leaves in the company)
+export const getLeavesForAdmin = async (req, res) => {
+  try {
+    const adminId = req.user._id;
+    const { status, page = 1, limit = 10, search, department } = req.query;
+
+    // Get admin's company
+    const adminUser = await User.findById(adminId).select('companyId');
+    if (!adminUser || !adminUser.companyId) {
+      throw new Error("Admin not associated with any company");
+    }
+
+    // Build query
+    let query = { company: adminUser.companyId };
+    
+    // Filter by status if provided
+    if (status && status !== 'all') {
+      query.status = status;
+    }
+    
+    // Filter by department if provided
+    if (department) {
+      const employeesInDept = await Employee.find({
+        'employmentDetails.department': department,
+        company: adminUser.companyId
+      }).select('_id');
+      
+      const employeeIds = employeesInDept.map(e => e._id);
+      query.employee = { $in: employeeIds };
+    }
+    
+    // Search by employee name if provided
+    if (search) {
+      const employeeUsers = await Employee.find({
+        company: adminUser.companyId,
+        $or: [
+          { 'user.profile.firstName': { $regex: search, $options: 'i' } },
+          { 'user.profile.lastName': { $regex: search, $options: 'i' } }
+        ]
+      }).select('_id');
+      
+      const searchedEmployeeIds = employeeUsers.map(e => e._id);
+      query.employee = { $in: searchedEmployeeIds };
+    }
+
+    const skip = (page - 1) * limit;
+    const total = await Leave.countDocuments(query);
+
+    const leaves = await Leave.find(query)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(Number(limit))
+      .populate({
+        path: 'employee',
+        select: 'user employmentDetails',
+        populate: [
+          { 
+            path: 'user', 
+            select: 'profile email',
+            populate: {
+              path: 'profile',
+              select: 'firstName lastName avatar designation'
+            }
+          },
+          { 
+            path: 'employmentDetails.department', 
+            select: 'name' 
+          }
+        ]
+      })
+      .populate('company', 'name')
+      .populate('approvalFlow.manager.approvedBy', 'profile email')
+      .populate('approvalFlow.hr.approvedBy', 'profile email')
+      .populate('approvalFlow.admin.approvedBy', 'profile email');
+
+    res.json({
+      success: true,
+      total,
+      page: Number(page),
+      totalPages: Math.ceil(total / limit),
+      count: leaves.length,
+      leaves
+    });
+  } catch (error) {
+    res.status(400).json({ success: false, message: error.message });
+  }
+};
+
+// Get leaves for employee (their own leaves)
+export const getLeavesForEmployee = async (req, res) => {
+  try {
+    const employeeId = req.user._id;
+    const { status, page = 1, limit = 10, year } = req.query;
+
+    // Get employee record
+    const employee = await Employee.findOne({ user: employeeId });
+    if (!employee) {
+      throw new Error("Employee not found");
+    }
+
+    // Build query
+    let query = { employee: employee._id };
+    
+    // Filter by status if provided
+    if (status && status !== 'all') {
+      query.status = status;
+    }
+    
+    // Filter by year if provided
+    if (year) {
+      const policy = await getCompanyPolicy(employee.company);
+      const yearStartMonth = policy?.yearStartMonth || 1;
+      const start = new Date(year, yearStartMonth - 1, 1);
+      const end = new Date(parseInt(year) + 1, yearStartMonth - 1, 0);
+      query.startDate = { $gte: start, $lte: end };
+    }
+
+    const skip = (page - 1) * limit;
+    const total = await Leave.countDocuments(query);
+
+    const leaves = await Leave.find(query)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(Number(limit))
+      .populate('company', 'name')
+      .populate('approvalFlow.manager.approvedBy', 'profile email')
+      .populate('approvalFlow.hr.approvedBy', 'profile email')
+      .populate('approvalFlow.admin.approvedBy', 'profile email');
+
+    res.json({
+      success: true,
+      total,
+      page: Number(page),
+      totalPages: Math.ceil(total / limit),
+      count: leaves.length,
+      leaves
+    });
+  } catch (error) {
+    res.status(400).json({ success: false, message: error.message });
+  }
+};
+
+// Get dashboard statistics for different roles
+export const getLeaveDashboardStats = async (req, res) => {
+  try {
+    const userId = req.user._id;
+    const userRole = req.user.role;
+    const companyId = req.user.companyId;
+
+    let stats = {};
+
+    if (userRole === 'employee') {
+      // Employee stats - only their leaves
+      const employee = await Employee.findOne({ user: userId });
+      if (!employee) throw new Error("Employee not found");
+
+      const totalLeaves = await Leave.countDocuments({ employee: employee._id });
+      const pendingLeaves = await Leave.countDocuments({ 
+        employee: employee._id, 
+        status: 'pending' 
+      });
+      const approvedLeaves = await Leave.countDocuments({ 
+        employee: employee._id, 
+        status: 'approved' 
+      });
+      const rejectedLeaves = await Leave.countDocuments({ 
+        employee: employee._id, 
+        status: 'rejected' 
+      });
+
+      stats = { totalLeaves, pendingLeaves, approvedLeaves, rejectedLeaves };
+
+    } else if (userRole === 'manager') {
+      // Manager stats - leaves from their department
+      const managedDepartments = await Department.find({ manager: userId }).select('_id');
+      const departmentIds = managedDepartments.map(d => d._id);
+      
+      const employees = await Employee.find({ 
+        'employmentDetails.department': { $in: departmentIds } 
+      }).select('_id');
+      
+      const employeeIds = employees.map(e => e._id);
+
+      const totalLeaves = await Leave.countDocuments({ employee: { $in: employeeIds } });
+      const pendingApproval = await Leave.countDocuments({ 
+        employee: { $in: employeeIds },
+        currentApprovalLevel: 'manager',
+        'approvalFlow.manager.status': 'pending'
+      });
+      const approvedLeaves = await Leave.countDocuments({ 
+        employee: { $in: employeeIds },
+        status: 'approved'
+      });
+      const pendingHR = await Leave.countDocuments({ 
+        employee: { $in: employeeIds },
+        currentApprovalLevel: 'hr',
+        'approvalFlow.hr.status': 'pending'
+      });
+
+      stats = { totalLeaves, pendingApproval, approvedLeaves, pendingHR };
+
+    } else if (userRole === 'hr') {
+      // HR stats - leaves from their department
+      const hrDepartments = await Department.find({ hr: userId }).select('_id');
+      const departmentIds = hrDepartments.map(d => d._id);
+      
+      const employees = await Employee.find({ 
+        'employmentDetails.department': { $in: departmentIds } 
+      }).select('_id');
+      
+      const employeeIds = employees.map(e => e._id);
+
+      const totalLeaves = await Leave.countDocuments({ employee: { $in: employeeIds } });
+      const pendingApproval = await Leave.countDocuments({ 
+        employee: { $in: employeeIds },
+        currentApprovalLevel: 'hr',
+        'approvalFlow.hr.status': 'pending'
+      });
+      const approvedLeaves = await Leave.countDocuments({ 
+        employee: { $in: employeeIds },
+        status: 'approved'
+      });
+      const pendingAdmin = await Leave.countDocuments({ 
+        employee: { $in: employeeIds },
+        currentApprovalLevel: 'admin',
+        'approvalFlow.admin.status': 'pending'
+      });
+
+      stats = { totalLeaves, pendingApproval, approvedLeaves, pendingAdmin };
+
+    } else if (['admin', 'superadmin'].includes(userRole)) {
+      // Admin stats - all company leaves
+      const totalLeaves = await Leave.countDocuments({ company: companyId });
+      const pendingManager = await Leave.countDocuments({ 
+        company: companyId,
+        currentApprovalLevel: 'manager',
+        'approvalFlow.manager.status': 'pending'
+      });
+      const pendingHR = await Leave.countDocuments({ 
+        company: companyId,
+        currentApprovalLevel: 'hr',
+        'approvalFlow.hr.status': 'pending'
+      });
+      const pendingAdmin = await Leave.countDocuments({ 
+        company: companyId,
+        currentApprovalLevel: 'admin',
+        'approvalFlow.admin.status': 'pending'
+      });
+      const approvedLeaves = await Leave.countDocuments({ 
+        company: companyId,
+        status: 'approved'
+      });
+
+      stats = { totalLeaves, pendingManager, pendingHR, pendingAdmin, approvedLeaves };
+    }
+
+    res.json({
+      success: true,
+      stats
+    });
+  } catch (error) {
+    res.status(400).json({ success: false, message: error.message });
   }
 };

@@ -11,60 +11,52 @@ const leaveSchema = new mongoose.Schema({
     ref: 'Company', 
     required: true 
   },
-    leaveBreakup: [
+  leaveBreakup: [
     {
-      leaveType: { type: String, required: true }, // e.g. CL, PL
-      shortCode: { type: String, required: true }, // optional if you use short code
-      days: { type: Number, required: true } // no. of days taken for that leave type
+      leaveType: { type: String, required: true },
+      shortCode: { type: String, required: true },
+      days: { type: Number, required: true }
     }
   ],
-  startDate: { 
-    type: Date, 
-    required: true 
-  },
-  endDate: { 
-    type: Date, 
-    required: true 
-  },
-  totalDays: { 
-    type: Number, 
-    required: true 
-  },
-  reason: { 
-    type: String, 
-    required: true 
-  },
+  startDate: { type: Date, required: true },
+  endDate: { type: Date, required: true },
+  totalDays: { type: Number, required: true },
+  reason: { type: String, required: true },
   status: { 
     type: String, 
     enum: ['pending', 'approved', 'rejected', 'cancelled'], 
     default: 'pending' 
   },
-  approvedByHR: { 
-    type: mongoose.Schema.Types.ObjectId, 
-    ref: 'User' 
+  // Approval workflow fields
+  approvalFlow: {
+    manager: {
+      status: { type: String, enum: ['pending', 'approved', 'rejected'], default: 'pending' },
+      approvedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+      approvedAt: Date,
+      comment: String
+    },
+    hr: {
+      status: { type: String, enum: ['pending', 'approved', 'rejected'], default: 'pending' },
+      approvedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+      approvedAt: Date,
+      comment: String
+    },
+    admin: {
+      status: { type: String, enum: ['pending', 'approved', 'rejected'], default: 'pending' },
+      approvedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+      approvedAt: Date,
+      comment: String
+    }
   },
-  approvedByManager: { 
-    type: mongoose.Schema.Types.ObjectId, 
-    ref: 'User' 
+  currentApprovalLevel: {
+    type: String,
+    enum: ['manager', 'hr', 'admin', 'completed'],
+    default: 'manager'
   },
-  approvedByAdmin: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'User'
-  },
-  rejectedBy: { 
-    type: mongoose.Schema.Types.ObjectId, 
-    ref: 'User' 
-  },
-  approvedAt: Date,
+  rejectedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   rejectionReason: String,
-  documents: [{ 
-    name: String, 
-    url: String 
-  }],
-  isHalfDay: {
-    type: Boolean,
-    default: false
-  },
+  documents: [{ name: String, url: String }],
+  isHalfDay: { type: Boolean, default: false },
   halfDayType: {
     type: String,
     enum: ['first-half', 'second-half', null],
@@ -78,5 +70,8 @@ const leaveSchema = new mongoose.Schema({
 leaveSchema.index({ employee: 1, startDate: 1, endDate: 1 });
 leaveSchema.index({ company: 1, status: 1 });
 leaveSchema.index({ company: 1, employee: 1, leaveType: 1 });
+leaveSchema.index({ 'approvalFlow.manager.status': 1 });
+leaveSchema.index({ 'approvalFlow.hr.status': 1 });
+leaveSchema.index({ 'approvalFlow.admin.status': 1 });
 
 export default mongoose.model('Leave', leaveSchema);

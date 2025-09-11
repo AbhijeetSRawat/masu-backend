@@ -1,52 +1,60 @@
-// routes/leaveRoutes.js
-// routes/leaveRoutes.js
 import express from 'express';
 import {
   applyLeave,
-  approveLeave,
+  managerApprove,
+  hrApprove,
+  adminApprove,
   rejectLeave,
+  getPendingLeavesByLevel,
   cancelLeave,
-  getEmployeeLeaves,
-  getLeavesForCompany,
-  getApprovedLeavesForCompany,
-  getPendingLeavesForCompany,
-  getCancelledLeavesForCompany,
-  getRejectedLeavesForCompany,
-  getRestLeaveOfEmployee,
   bulkUpdateLeaves,
+  getCancelledLeavesForCompany,
+  getLeavesForManager
 } from '../controllers/leave-controller.js';
-import { protect,restrictTo } from '../middleware/authMiddleware.js';
-import { getEmployeeLeaveSummary, getLeaveStatistics } from '../controllers/leaveReport-controller.js';
+import { protect, restrictTo } from '../middleware/authMiddleware.js';
 
+const router = express.Router();
 
-const r = express.Router();
+/**
+ * Leave Application
+ */
+router.post('/apply', protect, applyLeave);
 
-// Apply for leave
-r.post('/leaves/apply',  applyLeave);
+/**
+ * Approval Flow
+ */
+router.put('/:id/manager-approve', protect, restrictTo('manager'), managerApprove);
+router.put('/:id/hr-approve', protect, restrictTo('hr'), hrApprove);
+router.put('/:id/admin-approve', protect, restrictTo('admin'), adminApprove);
 
-// Approve leave (admin/manager action)
-r.patch('/leaves/:id/approve', protect, restrictTo("superadmin", "admin","subadmin"), approveLeave);
+/**
+ * Rejection (any level)
+ */
+router.put('/:id/reject', protect, rejectLeave);
 
-// Reject leave (admin/manager action)
-r.patch('/leaves/:id/reject', protect, restrictTo("superadmin", "admin","subadmin"), rejectLeave);
+/**
+ * Pending Leaves (by level)
+ */
+router.get('/pending/:level', protect, getPendingLeavesByLevel);
 
-// Cancel leave (employee action)
-r.patch('/leaves/:id/cancel', protect, cancelLeave);
+/**
+ * Cancel Leave (by employee or admin)
+ */
+router.put('/:id/cancel', protect, cancelLeave);
 
+/**
+ * Bulk Approval / Rejection
+ */
+router.put('/bulk/update', protect, restrictTo('manager', 'hr', 'admin', 'superadmin'), bulkUpdateLeaves);
 
-r.patch('/bulkupdate', protect, restrictTo("superadmin", "admin","subadmin"), bulkUpdateLeaves);
-// Get all leaves for an employee
-r.get('/leaves/:companyId/:employeeId', protect, getEmployeeLeaves);
+/**
+ * Get Cancelled Leaves for Company
+ */
+router.get('/company/:companyId/cancelled', protect, getCancelledLeavesForCompany);
 
-r.get('/leaves/:companyId', protect, restrictTo("superadmin", "admin","subadmin","hr","manager"), getLeavesForCompany);
-r.get('/approvedleaves/:companyId', protect, restrictTo("superadmin", "admin","subadmin","hr","manager"), getApprovedLeavesForCompany);
-r.get('/pendingleaves/:companyId', protect, restrictTo("superadmin", "admin","subadmin","hr","manager"), getPendingLeavesForCompany);
-r.get('/cancelledleaves/:companyId', protect, restrictTo("superadmin", "admin","subadmin","hr","manager"), getCancelledLeavesForCompany);
-r.get('/rejectedleaves/:companyId', protect, restrictTo("superadmin", "admin","subadmin","hr","manager"), getRejectedLeavesForCompany);
+/**
+ * Manager-specific view (leaves from their department employees)
+ */
+router.get('/manager/leaves', protect, restrictTo('manager'), getLeavesForManager);
 
-
-// routes/leaveRoutes.js
-r.get('/:employeeId/summary', getRestLeaveOfEmployee);
-r.get('/:companyId/:year', getLeaveStatistics);
-
-export default r;
+export default router;
