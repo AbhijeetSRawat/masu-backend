@@ -227,7 +227,7 @@ export const resetPassword = async (req, res, next) => {
     const jwtToken = jwt.sign({ id: user._id }, JWT_SECRET, {
       expiresIn: JWT_EXPIRES_IN
     });
-     await sendPasswordResetEmail(email, user?.role, password, user?.companyId);
+     await sendPasswordResetEmail(user?.email, user?.role, password, user?.companyId);
 
     res.status(200).json({
       status: 'success',
