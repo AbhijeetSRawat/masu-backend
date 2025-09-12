@@ -33,14 +33,17 @@ const userSchema = new mongoose.Schema({
     ref: 'Company',
   },
   permissions: [{ type: String }], 
-   customFields: [customFieldSchema],
+  customFields: [customFieldSchema],
   profile: { type: profileSchema  },
   isActive: { type: Boolean, default: true },
   lastLogin: Date,
   passwordChangedAt: Date,
   passwordResetToken: String,
-  passwordResetExpires: Date
-}, { 
+  passwordResetExpires: Date,
+  isFirstLogin: { type: Boolean, default: true },
+},
+
+ { 
   timestamps: true,
   versionKey: false 
 });

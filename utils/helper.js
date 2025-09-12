@@ -119,3 +119,29 @@ Welcome aboard!
     console.error("Error sending subadmin credentials:", error);
   }
 };
+
+export const sendPasswordResetEmail = async (email, role, tempPassword, companyId) => {
+  const mailOptions = {
+    from: process.env.EMAIL_USER,
+    to: email,
+    subject: "MASU Password Reset",
+    text: `
+🔐 Hello ${role},
+
+Your password has been reset.
+
+📧 Login Email: ${email}
+🔑 Temporary Password: ${tempPassword}
+🏢 Company ID: ${companyId}
+
+⚠️ Please login immediately and change your password for security.
+    `.trim(),
+  };
+
+  try {
+    await transporter.sendMail(mailOptions);
+    console.log(`Password reset email sent to ${role}:`, email);
+  } catch (error) {
+    console.error(`Error sending password reset email to ${role}:`, error);
+  }
+};

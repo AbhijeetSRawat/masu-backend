@@ -2,7 +2,7 @@ import jwt from 'jsonwebtoken';
 import User from '../models/User.js';
 import {AppError} from '../utils/errorHandler.js';
 import { createUser, getUserByEmail } from '../services/user.service.js';
-import { comparePasswords, hashPassword, sendOtpEmail } from '../utils/helper.js';
+import { comparePasswords, hashPassword, sendOtpEmail, sendPasswordResetEmail } from '../utils/helper.js';
 import crypto from 'crypto';
 import Employee from '../models/Employee.js';
 
@@ -92,7 +92,8 @@ export const login = async (req, res, next) => {
           companyId: user.companyId,
           email: user.email,
           role: user.role,
-          permissions: user?.permissions
+          permissions: user?.permissions,
+          fistLogin:user?.isFirstLogin || false,
         }
       }
     });
@@ -226,6 +227,7 @@ export const resetPassword = async (req, res, next) => {
     const jwtToken = jwt.sign({ id: user._id }, JWT_SECRET, {
       expiresIn: JWT_EXPIRES_IN
     });
+     await sendPasswordResetEmail(email, user?.role, password, user?.companyId);
 
     res.status(200).json({
       status: 'success',
@@ -235,5 +237,17 @@ export const resetPassword = async (req, res, next) => {
   } catch (err) {
     next(err);
   }
+};
+
+export const firstLoginReset = async (req, res) => {
+  const { email, newPassword } = req.body;
+
+  const hashedPassword = await hashPassword(newPassword);
+  const user =  await User.findOneAndUpdate(
+    { email },
+    { password: hashedPassword, isFirstLogin: false } // 👈 set first login to false
+  );
+ await sendPasswordResetEmail(email, user?.role, newPassword, user?.companyId);
+  res.json({ message: "Password reset successful. You can now log in." });
 };
 
