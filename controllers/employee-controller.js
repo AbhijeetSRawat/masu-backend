@@ -3,11 +3,13 @@ import User from "../models/User.js";
 import Department from "../models/Department.js";
 import Company from "../models/Company.js";
 import bcrypt from "bcryptjs";
+import crypto from 'crypto';
 
 import {
   generateEmployeeId,
   generateRandomPassword,
   sendAdminCredentials,
+  sendWelcome,
 } from "../utils/helper.js";
 import Shifts from "../models/Shifts.js";
 import uploadFileToCloudinary from "../utils/fileUploader.js";
@@ -648,8 +650,25 @@ export const createEmployee = async (req, res) => {
       isActive: true,
     });
 
-    // 9. Send Credentials via email
-    await sendAdminCredentials(email, email, plainPassword, company.companyId);
+    
+            // Generate a reset token
+              const resetToken = crypto.randomBytes(32).toString('hex');
+              const resetTokenHash = crypto.createHash('sha256').update(resetToken).digest('hex');
+          
+              // Set reset token and expiry on user
+              newUser.passwordResetToken = resetTokenHash;
+              newUser.passwordResetExpires = Date.now() + 10 * 60 * 1000; // 10 minutes
+              await newUser.save({ validateBeforeSave: false });
+    
+              // Send email (customize URL according to frontend)
+              const resetURL = `${req.protocol}://localhost:5173/reset-password/${resetToken}`;
+              const message = `Forgot your password? Reset it here: ${resetURL}\n\nIf you didn't request this, ignore this email.`;
+    
+              await newUser.save();
+      
+          // 9. Send Credentials via email
+          await sendWelcome(email, role, email, message, company.companyId);
+  
 
     // 10. Final response
     return res.status(201).json({

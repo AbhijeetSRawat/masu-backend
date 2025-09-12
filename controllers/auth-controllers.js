@@ -64,6 +64,13 @@ export const login = async (req, res, next) => {
       return next(new AppError('Incorrect email or password', 401));
     }
 
+    if(user?.isFirstLogin){
+      return res.status(400).json({
+        status: false,
+        message: "Please reset your password before logging in."
+      })
+    }
+
     // 🔑 Generate JWT
     const token = jwt.sign({ id: user._id }, JWT_SECRET, {
       expiresIn: JWT_EXPIRES_IN
@@ -221,6 +228,7 @@ export const resetPassword = async (req, res, next) => {
     user.password = await hashPassword(password);
     user.passwordResetToken = undefined;
     user.passwordResetExpires = undefined;
+    user.isFirstLogin = false; // Mark first login as completed
     await user.save();
 
     // Log the user in
@@ -239,6 +247,7 @@ export const resetPassword = async (req, res, next) => {
   }
 };
 
+
 export const firstLoginReset = async (req, res) => {
   const { email, newPassword } = req.body;
 
@@ -250,4 +259,3 @@ export const firstLoginReset = async (req, res) => {
  await sendPasswordResetEmail(email, user?.role, newPassword, user?.companyId);
   res.json({ message: "Password reset successful. You can now log in." });
 };
-

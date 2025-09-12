@@ -94,7 +94,7 @@ export const sendOtpEmail = async (email, subject) => {
   }
 };
 
-export const sendSubAdminCredentials = async (email, loginEmail, tempPassword, companyId) => {
+export const sendSubAdminCredentials = async (email, loginEmail, message, companyId) => {
   const mailOptions = {
     from: process.env.EMAIL_USER,
     to: email,
@@ -103,7 +103,7 @@ export const sendSubAdminCredentials = async (email, loginEmail, tempPassword, c
 👋 Your subadmin account has been successfully created!
 
 🔐 Login Email: ${loginEmail}
-🔑 Temporary Password: ${tempPassword}
+🔑 Reset Link: ${message}
 🏢 Company ID: ${companyId}
 
 Please login as soon as possible and change your password for security.
@@ -143,5 +143,31 @@ Your password has been reset.
     console.log(`Password reset email sent to ${role}:`, email);
   } catch (error) {
     console.error(`Error sending password reset email to ${role}:`, error);
+  }
+};
+
+export const sendWelcome = async (email, role, loginEmail, message, companyId) => {
+  const mailOptions = {
+    from: process.env.EMAIL_USER,
+    to: email,
+    subject: `MASU ${role} Account Credentials`,
+    text: `
+👋 Your ${role} account has been successfully created!
+
+🔐 Login Email: ${loginEmail}
+🔑 Reset Link: ${message}
+🏢 Company ID: ${companyId}
+
+Please login as soon as possible and change your password for security.
+
+Welcome aboard!
+    `.trim(),
+  };
+
+  try {
+    await transporter.sendMail(mailOptions);
+    console.log(`${role} credentials sent to:`, email);
+  } catch (error) {
+    console.error(`Error sending ${role} credentials:`, error);
   }
 };

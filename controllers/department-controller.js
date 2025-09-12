@@ -2,6 +2,7 @@ import Department from '../models/Department.js';
 import Company from '../models/Company.js';
 import Employee from '../models/Employee.js';
 import User from '../models/User.js'
+import crypto from 'crypto';
 
 
 import bcrypt from "bcryptjs";
@@ -10,6 +11,7 @@ import {
 
   generateRandomPassword,
   sendAdminCredentials,
+  sendSubAdminCredentials,
 } from "../utils/helper.js";
 
 
@@ -229,9 +231,27 @@ export const AssignHRorManager = async (req, res) => {
         },
         isActive: true,
       });
+
+      
+          // Generate a reset token
+          const resetToken = crypto.randomBytes(32).toString('hex');
+          const resetTokenHash = crypto.createHash('sha256').update(resetToken).digest('hex');
+      
+          // Set reset token and expiry on user
+          newUser.passwordResetToken = resetTokenHash;
+          newUser.passwordResetExpires = Date.now() + 10 * 60 * 1000; // 10 minutes
+          await newUser.save({ validateBeforeSave: false });
+
+          // Send email (customize URL according to frontend)
+          const resetURL = `${req.protocol}://localhost:5173/reset-password/${resetToken}`;
+          const message = `Forgot your password? Reset it here: ${resetURL}\n\nIf you didn't request this, ignore this email.`;
+
+          await newUser.save();
   
       // 9. Send Credentials via email
-      await sendAdminCredentials(email, email, plainPassword, company.companyId);
+      await sendSubAdminCredentials(email, email, message, company.companyId);
+
+      
 
       if(role === "hr"){
         departmentData.hr = newEmployee._id;
@@ -400,8 +420,25 @@ export const updateHRorManager = async (req, res) => {
         // return res.status(400).json({ message: "Manager already assigned for this department" });
       }
 
+        // Generate a reset token
+          const resetToken = crypto.randomBytes(32).toString('hex');
+          const resetTokenHash = crypto.createHash('sha256').update(resetToken).digest('hex');
+      
+          // Set reset token and expiry on user
+          newUser.passwordResetToken = resetTokenHash;
+          newUser.passwordResetExpires = Date.now() + 10 * 60 * 1000; // 10 minutes
+          await newUser.save({ validateBeforeSave: false });
+
+          // Send email (customize URL according to frontend)
+          const resetURL = `${req.protocol}://localhost:5173/reset-password/${resetToken}`;
+          const message = `Forgot your password? Reset it here: ${resetURL}\n\nIf you didn't request this, ignore this email.`;
+
+          await newUser.save();
+  
       // 9. Send Credentials via email
-      await sendAdminCredentials(email, email, plainPassword, company.companyId);
+      await sendSubAdminCredentials(email, email, message, company.companyId);
+
+
   
       // 10. Final response
       return res.status(201).json({
