@@ -9,7 +9,10 @@ import {
   cancelLeave,
   bulkUpdateLeaves,
   getCancelledLeavesForCompany,
-  getLeavesForManager
+  getLeavesForManager,
+  getLeavesForHR,
+  getLeavesForAdmin,
+  getLeavesForEmployee
 } from '../controllers/leave-controller.js';
 import { protect, restrictTo } from '../middleware/authMiddleware.js';
 
@@ -40,12 +43,12 @@ router.get('/pending/:level', protect, getPendingLeavesByLevel);
 /**
  * Cancel Leave (by employee or admin)
  */
-router.put('/:id/cancel', protect, cancelLeave);
+router.put('/:id/:userId/cancel', protect, cancelLeave);
 
 /**
  * Bulk Approval / Rejection
  */
-router.put('/bulk/update', protect, restrictTo('manager', 'hr', 'admin', 'superadmin'), bulkUpdateLeaves);
+router.put('/bulk/update/:userId', protect, restrictTo('manager', 'hr', 'admin', 'superadmin'), bulkUpdateLeaves);
 
 /**
  * Get Cancelled Leaves for Company
@@ -55,6 +58,9 @@ router.get('/company/:companyId/cancelled', protect, getCancelledLeavesForCompan
 /**
  * Manager-specific view (leaves from their department employees)
  */
-router.get('/manager/leaves', protect, restrictTo('manager'), getLeavesForManager);
+router.get('/manager/leaves/:managerId', protect, restrictTo('manager','admin','superadmin'), getLeavesForManager);
+router.get('/hr/leaves/:hrId',protect, restrictTo('hr','admin','superadmin'), getLeavesForHR)
+router.get('/admin/leaves/:adminId',protect, restrictTo('admin', 'superadmin'), getLeavesForAdmin)
+router.get('/employee/leaves/:employeeId',protect, restrictTo('hr','manager','admin','superadmin','employee'), getLeavesForEmployee)
 
 export default router;

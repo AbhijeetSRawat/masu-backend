@@ -220,6 +220,15 @@ export const resetPassword = async (req, res, next) => {
       passwordResetExpires: { $gt: Date.now() }
     });
 
+
+    // If expired, clear token immediately
+if (user.passwordResetExpires < Date.now()) {
+  user.passwordResetToken = undefined;
+  user.passwordResetExpires = undefined;
+  await user.save({ validateBeforeSave: false });
+  return next(new AppError('Token expired. Please request a new one.', 400));
+}
+
     if (!user) {
       return next(new AppError('Token is invalid or has expired', 400));
     }

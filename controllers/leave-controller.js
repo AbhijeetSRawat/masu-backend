@@ -11,6 +11,7 @@ import {
   getPolicyYearEnd
 } from '../services/leaveUtils.js';
 import uploadFileToCloudinary from '../utils/fileUploader.js';
+import User from '../models/User.js';
 
 // Helper for transaction handling
 const withTransaction = async (fn) => {
@@ -492,15 +493,14 @@ export const getPendingLeavesByLevel = async (req, res) => {
 export const cancelLeave = async (req, res) => {
   try {
     const { id } = req.params;
-    const userId = req.user._id;
-    const userRole = req.user.role;
+    const { userId }= req.params;
+    const employee = Employee.findById(userId);
 
     const leave = await Leave.findOneAndUpdate(
       {
         _id: id,
         $or: [
-          { employee: userId },
-          { userRole: 'admin' }
+          { employee: employee._id },
         ],
         status: { $in: ["pending", "approved"] }
       },
@@ -533,8 +533,9 @@ export const cancelLeave = async (req, res) => {
 export const bulkUpdateLeaves = async (req, res) => {
   try {
     const { ids, action, level, comment, reason } = req.body;
-    const userId = req.user._id;
-    const userRole = req.user.role;
+    const { userId } = req.params;
+    const user = await User.findById(userId);
+    const userRole = user?.role;
 
     if (!ids || !Array.isArray(ids) || ids.length === 0) {
       return res.status(400).json({ success: false, message: "Leave IDs are required" });
@@ -579,6 +580,20 @@ export const bulkUpdateLeaves = async (req, res) => {
         throw new Error(`${invalidLeaves} leaves are not eligible for ${level} ${action}. They may already be processed or at a different level.`);
       }
 
+      // 🔹 ADD THIS BLOCK HERE
+        for (const leave of leaves) {
+          if (level === "manager" && leave?.approvalFlow?.hr?.status !== "approved") {
+            throw new Error(`Leave ${leave._id} cannot be processed by HR because manager has not approved yet.`);
+          }
+          if (level === "admin") {
+            if (leave?.approvalFlow?.manager?.status !== "approved") {
+              throw new Error(`Leave ${leave._id} cannot be processed by Admin because manager has not approved yet.`);
+            }
+            if (leave?.approvalFlow?.hr?.status !== "approved") {
+              throw new Error(`Leave ${leave._id} cannot be processed by Admin because HR has not approved yet.`);
+            }
+          }
+        }
       // Check if user has permission to act on these leaves (department-based for manager/hr)
       if (['manager', 'hr'].includes(level)) {
         const departmentField = level === 'manager' ? 'manager' : 'hr';
@@ -732,111 +747,31 @@ export const getCancelledLeavesForCompany = async (req, res) => {
 
 
 // Get leaves for manager (leaves from their department employees)
-export const getLeavesForManager = async (req, res) => {
-  try {
-    const managerId = req.user._id;
-    const { status, page = 1, limit = 10, search } = req.query;
-
-    // Get departments managed by this user
-    const managedDepartments = await Department.find({ manager: managerId }).select('_id');
-    const departmentIds = managedDepartments.map(d => d._id);
-    
-    // Get employees in those departments
-    const employees = await Employee.find({ 
-      'employmentDetails.department': { $in: departmentIds } 
-    }).select('_id user');
-    
-    const employeeIds = employees.map(e => e._id);
-
-    // Build query
-    let query = { employee: { $in: employeeIds } };
-    
-    // Filter by status if provided
-    if (status && status !== 'all') {
-      query.status = status;
-    }
-    
-    // Search by employee name if provided
-    if (search) {
-      const employeeUsers = await Employee.find({
-        $or: [
-          { 'user.profile.firstName': { $regex: search, $options: 'i' } },
-          { 'user.profile.lastName': { $regex: search, $options: 'i' } }
-        ]
-      }).select('_id');
-      
-      const searchedEmployeeIds = employeeUsers.map(e => e._id);
-      query.employee = { $in: searchedEmployeeIds };
-    }
-
-    const skip = (page - 1) * limit;
-    const total = await Leave.countDocuments(query);
-
-    const leaves = await Leave.find(query)
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(Number(limit))
-      .populate({
-        path: 'employee',
-        select: 'user employmentDetails',
-        populate: [
-          { 
-            path: 'user', 
-            select: 'profile email',
-            populate: {
-              path: 'profile',
-              select: 'firstName lastName avatar designation'
-            }
-          },
-          { 
-            path: 'employmentDetails.department', 
-            select: 'name' 
-          }
-        ]
-      })
-      .populate('company', 'name')
-      .populate('approvalFlow.manager.approvedBy', 'profile email')
-      .populate('approvalFlow.hr.approvedBy', 'profile email')
-      .populate('approvalFlow.admin.approvedBy', 'profile email');
-
-    res.json({
-      success: true,
-      total,
-      page: Number(page),
-      totalPages: Math.ceil(total / limit),
-      count: leaves.length,
-      leaves
-    });
-  } catch (error) {
-    res.status(400).json({ success: false, message: error.message });
-  }
-};
-
-// Get leaves for HR (leaves from their department employees)
+// Get leaves for HR (first level of approval)
 export const getLeavesForHR = async (req, res) => {
   try {
-    const hrId = req.user._id;
+    const {hrId }= req.params;
     const { status, page = 1, limit = 10, search } = req.query;
 
     // Get departments where user is HR
     const hrDepartments = await Department.find({ hr: hrId }).select('_id');
     const departmentIds = hrDepartments.map(d => d._id);
-    
+
     // Get employees in those departments
-    const employees = await Employee.find({ 
-      'employmentDetails.department': { $in: departmentIds } 
+    const employees = await Employee.find({
+      'employmentDetails.department': { $in: departmentIds }
     }).select('_id user');
-    
+
     const employeeIds = employees.map(e => e._id);
 
-    // Build query
-    let query = { employee: { $in: employeeIds } };
-    
-    // Filter by status if provided
-    if (status && status !== 'all') {
-      query.status = status;
-    }
-    
+    // Build query - HR is the first level
+    let query = { 
+      employee: { $in: employeeIds },
+      currentApprovalLevel: 'hr'
+    };
+
+    if (status && status !== 'all') query.status = status;
+
     // Search by employee name if provided
     if (search) {
       const employeeUsers = await Employee.find({
@@ -845,7 +780,6 @@ export const getLeavesForHR = async (req, res) => {
           { 'user.profile.lastName': { $regex: search, $options: 'i' } }
         ]
       }).select('_id');
-      
       const searchedEmployeeIds = employeeUsers.map(e => e._id);
       query.employee = { $in: searchedEmployeeIds };
     }
@@ -861,23 +795,17 @@ export const getLeavesForHR = async (req, res) => {
         path: 'employee',
         select: 'user employmentDetails',
         populate: [
-          { 
-            path: 'user', 
+          {
+            path: 'user',
             select: 'profile email',
-            populate: {
-              path: 'profile',
-              select: 'firstName lastName avatar designation'
-            }
+            populate: { path: 'profile', select: 'firstName lastName avatar designation' }
           },
-          { 
-            path: 'employmentDetails.department', 
-            select: 'name' 
-          }
+          { path: 'employmentDetails.department', select: 'name' }
         ]
       })
       .populate('company', 'name')
-      .populate('approvalFlow.manager.approvedBy', 'profile email')
       .populate('approvalFlow.hr.approvedBy', 'profile email')
+      .populate('approvalFlow.manager.approvedBy', 'profile email')
       .populate('approvalFlow.admin.approvedBy', 'profile email');
 
     res.json({
@@ -893,38 +821,112 @@ export const getLeavesForHR = async (req, res) => {
   }
 };
 
-// Get leaves for admin (all leaves in the company)
+
+// Get leaves for Manager (after HR approval)
+export const getLeavesForManager = async (req, res) => {
+  try {
+    const {managerId} = req.params;
+    const { status, page = 1, limit = 10, search } = req.query;
+
+    // Get departments managed by this user
+    const managedDepartments = await Department.find({ manager: managerId }).select('_id');
+    const departmentIds = managedDepartments.map(d => d._id);
+
+    // Get employees in those departments
+    const employees = await Employee.find({
+      'employmentDetails.department': { $in: departmentIds }
+    }).select('_id user');
+
+    const employeeIds = employees.map(e => e._id);
+
+    // Build query - Manager comes after HR
+    let query = { 
+      employee: { $in: employeeIds },
+      currentApprovalLevel: 'manager',
+      'approvalFlow.hr.status': 'approved'
+    };
+
+    if (status && status !== 'all') query.status = status;
+
+    if (search) {
+      const employeeUsers = await Employee.find({
+        $or: [
+          { 'user.profile.firstName': { $regex: search, $options: 'i' } },
+          { 'user.profile.lastName': { $regex: search, $options: 'i' } }
+        ]
+      }).select('_id');
+      const searchedEmployeeIds = employeeUsers.map(e => e._id);
+      query.employee = { $in: searchedEmployeeIds };
+    }
+
+    const skip = (page - 1) * limit;
+    const total = await Leave.countDocuments(query);
+
+    const leaves = await Leave.find(query)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(Number(limit))
+      .populate({
+        path: 'employee',
+        select: 'user employmentDetails',
+        populate: [
+          {
+            path: 'user',
+            select: 'profile email',
+            populate: { path: 'profile', select: 'firstName lastName avatar designation' }
+          },
+          { path: 'employmentDetails.department', select: 'name' }
+        ]
+      })
+      .populate('company', 'name')
+      .populate('approvalFlow.hr.approvedBy', 'profile email')
+      .populate('approvalFlow.manager.approvedBy', 'profile email')
+      .populate('approvalFlow.admin.approvedBy', 'profile email');
+
+    res.json({
+      success: true,
+      total,
+      page: Number(page),
+      totalPages: Math.ceil(total / limit),
+      count: leaves.length,
+      leaves
+    });
+  } catch (error) {
+    res.status(400).json({ success: false, message: error.message });
+  }
+};
+
+
+// Get leaves for Admin (after Manager approval)
 export const getLeavesForAdmin = async (req, res) => {
   try {
-    const adminId = req.user._id;
+    const adminId = req.params;
     const { status, page = 1, limit = 10, search, department } = req.query;
 
-    // Get admin's company
     const adminUser = await User.findById(adminId).select('companyId');
     if (!adminUser || !adminUser.companyId) {
       throw new Error("Admin not associated with any company");
     }
 
-    // Build query
-    let query = { company: adminUser.companyId };
-    
-    // Filter by status if provided
-    if (status && status !== 'all') {
-      query.status = status;
-    }
-    
-    // Filter by department if provided
+    // Build query - Admin comes after Manager
+    let query = { 
+      company: adminUser.companyId,
+      currentApprovalLevel: 'admin',
+      'approvalFlow.manager.status': 'approved',
+      'approvalFlow.hr.status': 'approved'
+    };
+
+    if (status && status !== 'all') query.status = status;
+
     if (department) {
       const employeesInDept = await Employee.find({
         'employmentDetails.department': department,
         company: adminUser.companyId
       }).select('_id');
-      
       const employeeIds = employeesInDept.map(e => e._id);
       query.employee = { $in: employeeIds };
     }
-    
-    // Search by employee name if provided
+
     if (search) {
       const employeeUsers = await Employee.find({
         company: adminUser.companyId,
@@ -933,7 +935,6 @@ export const getLeavesForAdmin = async (req, res) => {
           { 'user.profile.lastName': { $regex: search, $options: 'i' } }
         ]
       }).select('_id');
-      
       const searchedEmployeeIds = employeeUsers.map(e => e._id);
       query.employee = { $in: searchedEmployeeIds };
     }
@@ -949,23 +950,17 @@ export const getLeavesForAdmin = async (req, res) => {
         path: 'employee',
         select: 'user employmentDetails',
         populate: [
-          { 
-            path: 'user', 
+          {
+            path: 'user',
             select: 'profile email',
-            populate: {
-              path: 'profile',
-              select: 'firstName lastName avatar designation'
-            }
+            populate: { path: 'profile', select: 'firstName lastName avatar designation' }
           },
-          { 
-            path: 'employmentDetails.department', 
-            select: 'name' 
-          }
+          { path: 'employmentDetails.department', select: 'name' }
         ]
       })
       .populate('company', 'name')
-      .populate('approvalFlow.manager.approvedBy', 'profile email')
       .populate('approvalFlow.hr.approvedBy', 'profile email')
+      .populate('approvalFlow.manager.approvedBy', 'profile email')
       .populate('approvalFlow.admin.approvedBy', 'profile email');
 
     res.json({
@@ -981,27 +976,22 @@ export const getLeavesForAdmin = async (req, res) => {
   }
 };
 
-// Get leaves for employee (their own leaves)
+
+// Get leaves for Employee (their own)
 export const getLeavesForEmployee = async (req, res) => {
   try {
-    const employeeId = req.user._id;
+    const {employeeId} = req.params;
     const { status, page = 1, limit = 10, year } = req.query;
 
-    // Get employee record
     const employee = await Employee.findOne({ user: employeeId });
     if (!employee) {
       throw new Error("Employee not found");
     }
 
-    // Build query
     let query = { employee: employee._id };
-    
-    // Filter by status if provided
-    if (status && status !== 'all') {
-      query.status = status;
-    }
-    
-    // Filter by year if provided
+
+    if (status && status !== 'all') query.status = status;
+
     if (year) {
       const policy = await getCompanyPolicy(employee.company);
       const yearStartMonth = policy?.yearStartMonth || 1;
@@ -1018,8 +1008,8 @@ export const getLeavesForEmployee = async (req, res) => {
       .skip(skip)
       .limit(Number(limit))
       .populate('company', 'name')
-      .populate('approvalFlow.manager.approvedBy', 'profile email')
       .populate('approvalFlow.hr.approvedBy', 'profile email')
+      .populate('approvalFlow.manager.approvedBy', 'profile email')
       .populate('approvalFlow.admin.approvedBy', 'profile email');
 
     res.json({
@@ -1157,3 +1147,6 @@ export const getLeaveDashboardStats = async (req, res) => {
     res.status(400).json({ success: false, message: error.message });
   }
 };
+
+
+// flow is hr manager admin
