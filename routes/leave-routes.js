@@ -43,7 +43,7 @@ router.get('/pending/:level', protect, getPendingLeavesByLevel);
 /**
  * Cancel Leave (by employee or admin)
  */
-router.put('/:id/:userId/cancel', protect, cancelLeave);
+router.put('/:id/:employeeId/cancel',protect,  cancelLeave);
 
 /**
  * Bulk Approval / Rejection
@@ -60,7 +60,7 @@ router.get('/company/:companyId/cancelled', protect, getCancelledLeavesForCompan
  */
 router.get('/manager/leaves/:managerId', protect, restrictTo('manager','admin','superadmin'), getLeavesForManager);
 router.get('/hr/leaves/:hrId',protect, restrictTo('hr','admin','superadmin'), getLeavesForHR)
-router.get('/admin/leaves/:adminId',protect, restrictTo('admin', 'superadmin'), getLeavesForAdmin)
+router.get('/admin/leaves/:adminId', getLeavesForAdmin)
 router.get('/employee/leaves/:employeeId',protect, restrictTo('hr','manager','admin','superadmin','employee'), getLeavesForEmployee)
 
 export default router;

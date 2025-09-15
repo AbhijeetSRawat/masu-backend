@@ -184,7 +184,7 @@ export const applyLeave = async (req, res) => {
         isHalfDay,
         halfDayType: isHalfDay ? halfDayType : null,
         status: "pending",
-        currentApprovalLevel: "manager",
+        currentApprovalLevel: "hr",
         approvalFlow: {
           manager: { status: "pending" },
           hr: { status: "pending" },
@@ -263,7 +263,7 @@ export const managerApprove = async (req, res) => {
       leaveDoc.approvalFlow.manager.comment = comment || "";
       
       // Move to next level (HR)
-      leaveDoc.currentApprovalLevel = "hr";
+      leaveDoc.currentApprovalLevel = "admin";
       
       await leaveDoc.save({ session });
       return leaveDoc;
@@ -305,7 +305,7 @@ export const hrApprove = async (req, res) => {
       leaveDoc.approvalFlow.hr.comment = comment || "";
       
       // Move to next level (Admin)
-      leaveDoc.currentApprovalLevel = "admin";
+      leaveDoc.currentApprovalLevel = "manager";
       
       await leaveDoc.save({ session });
       return leaveDoc;
@@ -493,8 +493,11 @@ export const getPendingLeavesByLevel = async (req, res) => {
 export const cancelLeave = async (req, res) => {
   try {
     const { id } = req.params;
-    const { userId }= req.params;
-    const employee = Employee.findById(userId);
+    const { employeeId }= req.params;
+    const employee = await Employee.findById(employeeId);
+    if(!employee){
+      return res.status(404).json({ success: false, message: "Employee not found" });
+    }
 
     const leave = await Leave.findOneAndUpdate(
       {
@@ -535,6 +538,10 @@ export const bulkUpdateLeaves = async (req, res) => {
     const { ids, action, level, comment, reason } = req.body;
     const { userId } = req.params;
     const user = await User.findById(userId);
+    const employee = await Employee.findOne({ user: userId });
+    if(!user){
+      return res.status(404).json({ success: false, message: "User not found" });
+    }
     const userRole = user?.role;
 
     if (!ids || !Array.isArray(ids) || ids.length === 0) {
@@ -597,27 +604,36 @@ export const bulkUpdateLeaves = async (req, res) => {
       // Check if user has permission to act on these leaves (department-based for manager/hr)
       if (['manager', 'hr'].includes(level)) {
         const departmentField = level === 'manager' ? 'manager' : 'hr';
+
+      
+     // Get departments where user has the role (manager/hr)
+          const userDepartments = await Department.find({ [departmentField]: employee._id })
+            .select('_id')
+            .session(session);
+
+          const departmentIds = userDepartments.map(d => d._id);
+
+          // Get employees in those departments
+          const employees = await Employee.find({
+            'employmentDetails.department': { $in: departmentIds }
+          }).select('_id').session(session);
+
+          const authorizedEmployeeIds = employees.map(e => e._id.toString());
+          console.log("Authorized Employee IDs:", authorizedEmployeeIds);
+
+          // Check if all leaves belong to authorized employees
+          const unauthorizedLeaves = leaves.filter(
+            leave => !authorizedEmployeeIds.includes(leave.employee.toString())
+          );
+
         
-        // Get departments where user has the role
-        const userDepartments = await Department.find({ [departmentField]: userId }).select('_id').session(session);
-        const departmentIds = userDepartments.map(d => d._id);
-        
-        // Get employees in those departments
-        const employees = await Employee.find({ 
-          'employmentDetails.department': { $in: departmentIds } 
-        }).select('_id').session(session);
-        
-        const authorizedEmployeeIds = employees.map(e => e._id);
-        
-        // Check if all leaves belong to authorized employees
-        const unauthorizedLeaves = leaves.filter(leave => 
-          !authorizedEmployeeIds.includes(leave.employee.toString())
-        );
-        
-        if (unauthorizedLeaves.length > 0) {
-          throw new Error(`You are not authorized to act on ${unauthorizedLeaves.length} leaves. They are not from your department.`);
+
+          if (unauthorizedLeaves.length > 0) {
+            throw new Error(
+              `You are not authorized to act on ${unauthorizedLeaves.length} leaves. They are not from your department.`
+            );
+          }
         }
-      }
 
       let updatePromises = [];
 
@@ -703,7 +719,6 @@ export const bulkUpdateLeaves = async (req, res) => {
 };
 
 
-
 export const getCancelledLeavesForCompany = async (req, res) => {
   const { companyId } = req.params;
   const { page = 1, limit = 10 } = req.query; // default values
@@ -747,40 +762,63 @@ export const getCancelledLeavesForCompany = async (req, res) => {
 
 
 // Get leaves for manager (leaves from their department employees)
-// Get leaves for HR (first level of approval)
 export const getLeavesForHR = async (req, res) => {
   try {
-    const {hrId }= req.params;
+    const { hrId } = req.params;
     const { status, page = 1, limit = 10, search } = req.query;
 
-    // Get departments where user is HR
-    const hrDepartments = await Department.find({ hr: hrId }).select('_id');
+    // ⚡ Ensure hrId is ObjectId
+    const hrDepartments = await Department.find({ hr: new mongoose.Types.ObjectId(hrId) }).select("_id");
     const departmentIds = hrDepartments.map(d => d._id);
 
-    // Get employees in those departments
+    // Employees under those departments
     const employees = await Employee.find({
-      'employmentDetails.department': { $in: departmentIds }
-    }).select('_id user');
+      "employmentDetails.department": { $in: departmentIds }
+    }).select("_id user");
 
     const employeeIds = employees.map(e => e._id);
 
-    // Build query - HR is the first level
-    let query = { 
-      employee: { $in: employeeIds },
-      currentApprovalLevel: 'hr'
-    };
+    // ⚡ Fix approval level query
+   let query = { 
+  employee: { $in: employeeIds },
+  $or: [
+    { currentApprovalLevel: "hr" },
+    { "approvalFlow.hr.status": { $in: ["approved", "rejected"] } }
+  ]
+};
 
-    if (status && status !== 'all') query.status = status;
+query.status = { $ne: "cancelled" };
 
-    // Search by employee name if provided
+
+// Apply filter
+if (status && status !== "all") {
+  query.$or = [
+    { currentApprovalLevel: "hr", "approvalFlow.hr.status": status },
+    { "approvalFlow.hr.status": status }
+  ];
+}
+
+
+    // ⚠ If user is a reference, you can’t regex search inside it directly.
     if (search) {
       const employeeUsers = await Employee.find({
-        $or: [
-          { 'user.profile.firstName': { $regex: search, $options: 'i' } },
-          { 'user.profile.lastName': { $regex: search, $options: 'i' } }
-        ]
-      }).select('_id');
-      const searchedEmployeeIds = employeeUsers.map(e => e._id);
+        _id: { $in: employeeIds }
+      })
+      .populate({
+        path: "user",
+        select: "profile",
+        match: {
+          $or: [
+            { "profile.firstName": { $regex: search, $options: "i" } },
+            { "profile.lastName": { $regex: search, $options: "i" } }
+          ]
+        }
+      });
+
+      const searchedEmployeeIds = employeeUsers
+        .filter(e => e.user) // only keep where match worked
+        .map(e => e._id);
+
       query.employee = { $in: searchedEmployeeIds };
     }
 
@@ -792,21 +830,20 @@ export const getLeavesForHR = async (req, res) => {
       .skip(skip)
       .limit(Number(limit))
       .populate({
-        path: 'employee',
-        select: 'user employmentDetails',
+        path: "employee",
+        select: "user employmentDetails",
         populate: [
           {
-            path: 'user',
-            select: 'profile email',
-            populate: { path: 'profile', select: 'firstName lastName avatar designation' }
+            path: "user",
+            select: "profile email",
           },
-          { path: 'employmentDetails.department', select: 'name' }
+          { path: "employmentDetails.department", select: "name" }
         ]
       })
-      .populate('company', 'name')
-      .populate('approvalFlow.hr.approvedBy', 'profile email')
-      .populate('approvalFlow.manager.approvedBy', 'profile email')
-      .populate('approvalFlow.admin.approvedBy', 'profile email');
+      .populate("company", "name")
+      .populate("approvalFlow.hr.approvedBy", "profile email")
+      .populate("approvalFlow.manager.approvedBy", "profile email")
+      .populate("approvalFlow.admin.approvedBy", "profile email");
 
     res.json({
       success: true,
@@ -820,6 +857,7 @@ export const getLeavesForHR = async (req, res) => {
     res.status(400).json({ success: false, message: error.message });
   }
 };
+
 
 
 // Get leaves for Manager (after HR approval)
@@ -839,14 +877,36 @@ export const getLeavesForManager = async (req, res) => {
 
     const employeeIds = employees.map(e => e._id);
 
-    // Build query - Manager comes after HR
-    let query = { 
-      employee: { $in: employeeIds },
-      currentApprovalLevel: 'manager',
-      'approvalFlow.hr.status': 'approved'
-    };
+  let query = {
+  employee: { $in: employeeIds },
+  $or: [
+    // Waiting for manager approval (only if HR approved)
+    { currentApprovalLevel: "manager", "approvalFlow.hr.status": "approved" },
 
-    if (status && status !== 'all') query.status = status;
+    // Already acted by manager
+    { "approvalFlow.manager.status": { $in: ["approved", "rejected"] } }
+  ]
+};
+
+query.status = { $ne: "cancelled" };
+
+   
+if (status && status !== "all") {
+  if (status === "pending") {
+    query.$and = [
+      { status: "pending" },
+      { currentApprovalLevel: "manager" },
+      { "approvalFlow.hr.status": "approved" }
+    ];
+    delete query.$or;
+  } else {
+    query.$or = [
+      { "approvalFlow.manager.status": status }
+    ];
+  }
+}
+
+
 
     if (search) {
       const employeeUsers = await Employee.find({
@@ -861,6 +921,8 @@ export const getLeavesForManager = async (req, res) => {
 
     const skip = (page - 1) * limit;
     const total = await Leave.countDocuments(query);
+
+  
 
     const leaves = await Leave.find(query)
       .sort({ createdAt: -1 })
@@ -900,7 +962,7 @@ export const getLeavesForManager = async (req, res) => {
 // Get leaves for Admin (after Manager approval)
 export const getLeavesForAdmin = async (req, res) => {
   try {
-    const adminId = req.params;
+    const {adminId }= req.params;
     const { status, page = 1, limit = 10, search, department } = req.query;
 
     const adminUser = await User.findById(adminId).select('companyId');
@@ -909,14 +971,32 @@ export const getLeavesForAdmin = async (req, res) => {
     }
 
     // Build query - Admin comes after Manager
-    let query = { 
+     let query = { 
       company: adminUser.companyId,
-      currentApprovalLevel: 'admin',
-      'approvalFlow.manager.status': 'approved',
-      'approvalFlow.hr.status': 'approved'
+      "approvalFlow.hr.status": "approved",
+      "approvalFlow.manager.status": "approved"
     };
 
-    if (status && status !== 'all') query.status = status;
+   if (status && status !== "all") {
+  if (status === "pending") {
+    query.$and = [
+      { status: "pending" },
+      { "approvalFlow.hr.status": "approved" },
+      { "approvalFlow.manager.status": "approved" },
+      { "approvalFlow.admin.status": "pending" }  // ✅ key fix
+    ];
+    delete query.$or;
+  } else {
+    query.$and = [
+      { "approvalFlow.hr.status": "approved" },
+      { "approvalFlow.manager.status": "approved" },
+      { "approvalFlow.admin.status": status }
+    ];
+  }
+}
+
+query.status = { $ne: "cancelled" };
+
 
     if (department) {
       const employeesInDept = await Employee.find({
@@ -1010,7 +1090,8 @@ export const getLeavesForEmployee = async (req, res) => {
       .populate('company', 'name')
       .populate('approvalFlow.hr.approvedBy', 'profile email')
       .populate('approvalFlow.manager.approvedBy', 'profile email')
-      .populate('approvalFlow.admin.approvedBy', 'profile email');
+      .populate('approvalFlow.admin.approvedBy', 'profile email')
+      .populate('rejectedBy', 'profile email');
 
     res.json({
       success: true,

@@ -142,7 +142,11 @@ try {
       role: 'admin',
       companyId: company._id,
       firstTimeLogin: true,
-      profile:{}// to be configured by superadmin
+      profile:{
+        firstName: 'Admin',
+        lastName: '',
+        designation: 'Admin'
+      }// to be configured by superadmin
     });
 
     await adminUser.save();
