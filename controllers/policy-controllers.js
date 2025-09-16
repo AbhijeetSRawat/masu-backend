@@ -11,7 +11,7 @@ export const addCompanyPolicy = async (req, res) => {
       policyFile,
       process.env.FOLDER_NAME
     )
-    console.log(documentUrl)
+  
 
     // Check if the company exists
     const company = await Company.findById(companyId);
@@ -23,8 +23,8 @@ export const addCompanyPolicy = async (req, res) => {
       company: companyId,
       title,
       description,
-      documentUrl : documentUrl.result.secure_url,
-      mimeType : documentUrl.mimeType,
+      documentUrl : documentUrl?.result?.secure_url,
+      mimeType : documentUrl?.mimeType,
     });
 
     await newPolicy.save();
