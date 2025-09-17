@@ -1,11 +1,860 @@
-import Attendance from '../models/Attendance.js'
-import Employee from '../models/Employee.js'
-import Shift from '../models/Shifts.js'
-import Company from '../models/Company.js'
+// controllers/attendanceRegularizationController.js
+import mongoose from 'mongoose';
+import Attendance from '../models/Attendance.js';
+import Employee from '../models/Employee.js';
+import Shift from '../models/Shifts.js';
+import Company from '../models/Company.js';
 import AttendanceRegularization from '../models/AttendanceRegularization.js';
 import User from '../models/User.js';
+import Department from '../models/Department.js';
 
-// Get all regularization requests
+// Helper for transaction handling
+const withTransaction = async (fn) => {
+  const session = await mongoose.startSession();
+  try {
+    session.startTransaction();
+    const result = await fn(session);
+    await session.commitTransaction();
+    return result;
+  } catch (error) {
+    await session.abortTransaction();
+    throw error;
+  } finally {
+    session.endSession();
+  }
+};
+
+
+
+// Create a new regularization request
+export const createRegularization = async (req, res) => {
+  try {
+    const regularization = await withTransaction(async (session) => {
+      const {
+        employee,
+        user,
+        company,
+        from,
+        to,
+        shift,
+        requestedInTime,
+        requestedOutTime,
+        reason,
+        regularizationType
+      } = req.body;
+
+      // Check if employee exists
+      const employeeExists = await Employee.findById(employee);
+      if (!employeeExists) {
+        throw new Error('Employee not found');
+      }
+
+      const userExists = await User.findById(user);
+      if (!userExists) {
+        throw new Error('User not found');
+      }
+
+      const companyExists = await Company.findById(company);
+      if (!companyExists) {
+        throw new Error('Company not found');
+      }
+
+      const shiftExists = await Shift.findById(shift);
+      if (!shiftExists) {
+        throw new Error('Shift not found');
+      }
+
+      // Check if regularization already exists
+      const existingRegularization = await AttendanceRegularization.findOne({
+        employee,
+        from: { $gte: new Date(from), $lte: new Date(to) }
+      });
+
+      if (existingRegularization) {
+        throw new Error('Regularization request already exists for this date range');
+      }
+
+      // Calculate total hours
+      const calculateHours = (inTime, outTime) => {
+        const [inHours, inMinutes] = inTime.split(':').map(Number);
+        const [outHours, outMinutes] = outTime.split(':').map(Number);
+        
+        let totalMinutes = (outHours * 60 + outMinutes) - (inHours * 60 + inMinutes);
+        if (totalMinutes < 0) totalMinutes += 24 * 60;
+        
+        return totalMinutes / 60;
+      };
+
+      const totalHours = calculateHours(requestedInTime, requestedOutTime);
+
+      const regularizationData = {
+        employee,
+        user,
+        company,
+        from: new Date(from),
+        to: new Date(to),
+        shift,
+        requestedInTime,
+        requestedOutTime,
+        reason,
+        regularizationType,
+        totalHours,
+        createdBy: req.user._id,
+        status: 'pending',
+        currentApprovalLevel: 'hr',
+        approvalFlow: {
+          manager: { status: 'pending' },
+          hr: { status: 'pending' },
+          admin: { status: 'pending' }
+        }
+      };
+
+      const [newRegularization] = await AttendanceRegularization.create([regularizationData], { session });
+      
+      await newRegularization.populate([
+        { path: 'employee', select: 'employmentDetails personalDetails' },
+        { path: 'user', select: 'email profile' },
+        { path: 'company', select: 'name' },
+        { path: 'shift', select: 'name startTime endTime' }
+      ]);
+
+      return newRegularization;
+    });
+
+    res.status(201).json({
+      success: true,
+      message: "Regularization submitted for manager approval",
+      regularization
+    });
+  } catch (error) {
+    res.status(400).json({ success: false, message: error.message });
+  }
+};
+
+// Update regularization details by user (before HR approval/rejection)
+export const updateRegularizationByUser = async (req, res) => {
+  try {
+    const { regularizationId } = req.params;
+    const userId = req.user._id;
+    
+    const {
+      from,
+      to,
+      shift,
+      requestedInTime,
+      requestedOutTime,
+      reason,
+      regularizationType
+    } = req.body;
+
+    const regularization = await withTransaction(async (session) => {
+      // Find the regularization request
+      const regularizationDoc = await AttendanceRegularization.findById(regularizationId).session(session);
+      if (!regularizationDoc) {
+        throw new Error("Regularization request not found");
+      }
+
+      // Check if the user owns this regularization request
+      if (regularizationDoc.user.toString() !== userId.toString()) {
+        throw new Error("You can only update your own regularization requests");
+      }
+
+      // Check if the request is still editable (before HR approval/rejection)
+      if (regularizationDoc.approvalFlow.hr.status !== 'pending') {
+        throw new Error("Cannot update regularization request after HR has acted on it");
+      }
+
+      // Check if the request is already approved/rejected at any level
+      if (regularizationDoc.status !== 'pending') {
+        throw new Error("Cannot update regularization request that has been processed");
+      }
+
+      // Validate shift if provided
+      if (shift) {
+        const shiftExists = await Shift.findById(shift).session(session);
+        if (!shiftExists) {
+          throw new Error('Shift not found');
+        }
+        regularizationDoc.shift = shift;
+      }
+
+      // Update fields if provided
+      if (from) regularizationDoc.from = new Date(from);
+      if (to) regularizationDoc.to = new Date(to);
+      if (requestedInTime) regularizationDoc.requestedInTime = requestedInTime;
+      if (requestedOutTime) regularizationDoc.requestedOutTime = requestedOutTime;
+      if (reason) regularizationDoc.reason = reason;
+      if (regularizationType) regularizationDoc.regularizationType = regularizationType;
+
+      // Recalculate total hours if times are updated
+      if (requestedInTime || requestedOutTime) {
+        const calculateHours = (inTime, outTime) => {
+          const [inHours, inMinutes] = inTime.split(':').map(Number);
+          const [outHours, outMinutes] = outTime.split(':').map(Number);
+          
+          let totalMinutes = (outHours * 60 + outMinutes) - (inHours * 60 + inMinutes);
+          if (totalMinutes < 0) totalMinutes += 24 * 60;
+          
+          return totalMinutes / 60;
+        };
+
+        const finalInTime = requestedInTime || regularizationDoc.requestedInTime;
+        const finalOutTime = requestedOutTime || regularizationDoc.requestedOutTime;
+        regularizationDoc.totalHours = calculateHours(finalInTime, finalOutTime);
+      }
+
+      // Reset approval flow to initial state since details have changed
+      regularizationDoc.currentApprovalLevel = 'hr';
+      regularizationDoc.approvalFlow.manager.status = 'pending';
+      regularizationDoc.approvalFlow.manager.approvedBy = null;
+      regularizationDoc.approvalFlow.manager.approvedAt = null;
+      regularizationDoc.approvalFlow.manager.comment = '';
+      
+      regularizationDoc.approvalFlow.hr.status = 'pending';
+      regularizationDoc.approvalFlow.hr.approvedBy = null;
+      regularizationDoc.approvalFlow.hr.approvedAt = null;
+      regularizationDoc.approvalFlow.hr.comment = '';
+      
+      regularizationDoc.approvalFlow.admin.status = 'pending';
+      regularizationDoc.approvalFlow.admin.approvedBy = null;
+      regularizationDoc.approvalFlow.admin.approvedAt = null;
+      regularizationDoc.approvalFlow.admin.comment = '';
+
+      // Check for date conflicts with other regularization requests (excluding current one)
+      if (from || to) {
+        const finalFrom = from ? new Date(from) : regularizationDoc.from;
+        const finalTo = to ? new Date(to) : regularizationDoc.to;
+
+        const existingRegularization = await AttendanceRegularization.findOne({
+          employee: regularizationDoc.employee,
+          _id: { $ne: id },
+          $or: [
+            { from: { $lte: finalTo, $gte: finalFrom } },
+            { to: { $lte: finalTo, $gte: finalFrom } },
+            { from: { $lte: finalFrom }, to: { $gte: finalTo } }
+          ]
+        }).session(session);
+
+        if (existingRegularization) {
+          throw new Error('Regularization request already exists for this date range');
+        }
+      }
+
+      await regularizationDoc.save({ session });
+
+      // Populate the updated document
+      await regularizationDoc.populate([
+        { path: 'employee', select: 'employmentDetails personalDetails' },
+        { path: 'user', select: 'email profile' },
+        { path: 'company', select: 'name' },
+        { path: 'shift', select: 'name startTime endTime' },
+        { path: 'approvalFlow.manager.approvedBy', select: 'profile email' },
+        { path: 'approvalFlow.hr.approvedBy', select: 'profile email' },
+        { path: 'approvalFlow.admin.approvedBy', select: 'profile email' }
+      ]);
+
+      return regularizationDoc;
+    });
+
+    res.json({
+      success: true,
+      message: "Regularization request updated successfully and sent for re-approval",
+      regularization
+    });
+
+  } catch (error) {
+    console.error("Update Regularization Error:", error);
+    res.status(400).json({ 
+      success: false, 
+      message: error.message 
+    });
+  }
+};
+
+
+// Manager approval
+export const managerApproveRegularization = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const managerId = req.user._id;
+    const { comment } = req.body;
+
+    const regularization = await withTransaction(async (session) => {
+      const regularizationDoc = await AttendanceRegularization.findById(id).session(session);
+      if (!regularizationDoc) throw new Error("Regularization request not found");
+      
+      if (regularizationDoc.currentApprovalLevel !== "manager") {
+        throw new Error("Regularization is not awaiting manager approval");
+      }
+
+      if (regularizationDoc.approvalFlow.manager.status !== "pending") {
+        throw new Error("Manager has already acted on this regularization");
+      }
+
+      // Update manager approval
+      regularizationDoc.approvalFlow.manager.status = "approved";
+      regularizationDoc.approvalFlow.manager.approvedBy = managerId;
+      regularizationDoc.approvalFlow.manager.approvedAt = new Date();
+      regularizationDoc.approvalFlow.manager.comment = comment || "";
+      
+      // Move to next level (HR)
+      regularizationDoc.currentApprovalLevel = "admin";
+      
+      await regularizationDoc.save({ session });
+      return regularizationDoc;
+    });
+
+    res.json({
+      success: true,
+      message: "Regularization approved by manager and sent to HR",
+      regularization
+    });
+  } catch (error) {
+    res.status(400).json({ success: false, message: error.message });
+  }
+};
+
+// HR approval
+export const hrApproveRegularization = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const hrId = req.user._id;
+    const { comment } = req.body;
+
+    const regularization = await withTransaction(async (session) => {
+      const regularizationDoc = await AttendanceRegularization.findById(id).session(session);
+      if (!regularizationDoc) throw new Error("Regularization request not found");
+      
+      if (regularizationDoc.currentApprovalLevel !== "hr") {
+        throw new Error("Regularization is not awaiting HR approval");
+      }
+
+      if (regularizationDoc.approvalFlow.hr.status !== "pending") {
+        throw new Error("HR has already acted on this regularization");
+      }
+
+      // Update HR approval
+      regularizationDoc.approvalFlow.hr.status = "approved";
+      regularizationDoc.approvalFlow.hr.approvedBy = hrId;
+      regularizationDoc.approvalFlow.hr.approvedAt = new Date();
+      regularizationDoc.approvalFlow.hr.comment = comment || "";
+      
+      // Move to next level (Admin)
+      regularizationDoc.currentApprovalLevel = "manager";
+      
+      await regularizationDoc.save({ session });
+      return regularizationDoc;
+    });
+
+    res.json({
+      success: true,
+      message: "Regularization approved by HR and sent to Admin",
+      regularization
+    });
+  } catch (error) {
+    res.status(400).json({ success: false, message: error.message });
+  }
+};
+
+// Admin approval (final)
+export const adminApproveRegularization = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const adminId = req.user._id;
+    const { comment } = req.body;
+
+    const regularization = await withTransaction(async (session) => {
+      const regularizationDoc = await AttendanceRegularization.findById(id).session(session);
+      if (!regularizationDoc) throw new Error("Regularization request not found");
+      
+      if (regularizationDoc.currentApprovalLevel !== "admin") {
+        throw new Error("Regularization is not awaiting admin approval");
+      }
+
+      if (regularizationDoc.approvalFlow.admin.status !== "pending") {
+        throw new Error("Admin has already acted on this regularization");
+      }
+
+      // Update admin approval
+      regularizationDoc.approvalFlow.admin.status = "approved";
+      regularizationDoc.approvalFlow.admin.approvedBy = adminId;
+      regularizationDoc.approvalFlow.admin.approvedAt = new Date();
+      regularizationDoc.approvalFlow.admin.comment = comment || "";
+      
+      // Complete the approval process
+      regularizationDoc.status = "approved";
+      regularizationDoc.currentApprovalLevel = "completed";
+      
+      await regularizationDoc.save({ session });
+      return regularizationDoc;
+    });
+
+    res.json({
+      success: true,
+      message: "Regularization approved by Admin",
+      regularization
+    });
+  } catch (error) {
+    res.status(400).json({ success: false, message: error.message });
+  }
+};
+
+// Reject at any level
+export const rejectRegularization = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user._id;
+    const { reason, level } = req.body;
+
+    if (!reason) throw new Error("Rejection reason is required");
+    if (!["manager", "hr", "admin"].includes(level)) {
+      throw new Error("Invalid approval level");
+    }
+
+    const regularization = await withTransaction(async (session) => {
+      const regularizationDoc = await AttendanceRegularization.findById(id).session(session);
+      if (!regularizationDoc) throw new Error("Regularization request not found");
+      
+      if (regularizationDoc.currentApprovalLevel !== level) {
+        throw new Error(`Regularization is not awaiting ${level} approval`);
+      }
+
+      if (regularizationDoc.approvalFlow[level].status !== "pending") {
+        throw new Error(`${level} has already acted on this regularization`);
+      }
+
+      // Update rejection at the current level
+      regularizationDoc.approvalFlow[level].status = "rejected";
+      regularizationDoc.approvalFlow[level].approvedBy = userId;
+      regularizationDoc.approvalFlow[level].approvedAt = new Date();
+      regularizationDoc.approvalFlow[level].comment = reason;
+      
+      // Set overall status to rejected
+      regularizationDoc.status = "rejected";
+      regularizationDoc.rejectedBy = userId;
+      regularizationDoc.rejectionReason = reason;
+      regularizationDoc.currentApprovalLevel = "completed";
+      
+      await regularizationDoc.save({ session });
+      return regularizationDoc;
+    });
+
+    res.json({
+      success: true,
+      message: `Regularization rejected by ${level}`,
+      regularization
+    });
+  } catch (error) {
+    res.status(400).json({ success: false, message: error.message });
+  }
+};
+
+// Get regularizations pending at specific level
+export const getPendingRegularizationsByLevel = async (req, res) => {
+  try {
+    const { level } = req.params;
+    const userId = req.user._id;
+    
+    if (!["manager", "hr", "admin"].includes(level)) {
+      return res.status(400).json({ success: false, message: "Invalid level" });
+    }
+
+    let query = { 
+      [`approvalFlow.${level}.status`]: "pending",
+      currentApprovalLevel: level
+    };
+
+    if (level === "manager") {
+      const managedDepartments = await Department.find({ manager: userId }).select('_id');
+      const departmentIds = managedDepartments.map(d => d._id);
+      
+      const employees = await Employee.find({ 
+        'employmentDetails.department': { $in: departmentIds } 
+      }).select('_id');
+      
+      const employeeIds = employees.map(e => e._id);
+      query.employee = { $in: employeeIds };
+    } else if (level === "hr") {
+      const hrDepartments = await Department.find({ hr: userId }).select('_id');
+      const departmentIds = hrDepartments.map(d => d._id);
+      
+      const employees = await Employee.find({ 
+        'employmentDetails.department': { $in: departmentIds } 
+      }).select('_id');
+      
+      const employeeIds = employees.map(e => e._id);
+      query.employee = { $in: employeeIds };
+    }
+
+    const { page = 1, limit = 10 } = req.query;
+    const skip = (page - 1) * limit;
+
+    const total = await AttendanceRegularization.countDocuments(query);
+    const regularizations = await AttendanceRegularization.find(query)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(Number(limit))
+      .populate({
+        path: 'employee',
+        select: 'user employmentDetails',
+        populate: [
+          { path: 'user', select: 'profile' },
+          { path: 'employmentDetails.department', select: 'name' }
+        ]
+      })
+      .populate('company', 'name')
+      .populate('shift', 'name');
+
+    res.json({
+      success: true,
+      total,
+      page: Number(page),
+      totalPages: Math.ceil(total / limit),
+      count: regularizations.length,
+      regularizations
+    });
+  } catch (error) {
+    res.status(400).json({ success: false, message: error.message });
+  }
+};
+
+// Get regularizations for manager
+export const getRegularizationsForManager = async (req, res) => {
+  try {
+    const { managerId } = req.params;
+    const { status, page = 1, limit = 10 } = req.query;
+
+    const managedDepartments = await Department.find({ manager: managerId }).select('_id');
+    const departmentIds = managedDepartments.map(d => d._id);
+
+    const employees = await Employee.find({
+      'employmentDetails.department': { $in: departmentIds }
+    }).select('_id user');
+
+    const employeeIds = employees.map(e => e._id);
+
+     let query = {
+  employee: { $in: employeeIds },
+  $or: [
+    // Waiting for manager approval (only if HR approved)
+    { currentApprovalLevel: "manager", "approvalFlow.hr.status": "approved" },
+
+    // Already acted by manager
+    { "approvalFlow.manager.status": { $in: ["approved", "rejected"] } }
+  ]
+};
+
+query.status = { $ne: "cancelled" };
+
+   
+if (status && status !== "all") {
+  if (status === "pending") {
+    query.$and = [
+      { status: "pending" },
+      { currentApprovalLevel: "manager" },
+      { "approvalFlow.hr.status": "approved" }
+    ];
+    delete query.$or;
+  } else {
+    query.$or = [
+      { "approvalFlow.manager.status": status }
+    ];
+  }
+}
+
+    const skip = (page - 1) * limit;
+    const total = await AttendanceRegularization.countDocuments(query);
+
+    const regularizations = await AttendanceRegularization.find(query)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(Number(limit))
+      .populate({
+        path: 'employee',
+        select: 'user employmentDetails',
+        populate: [
+          { path: 'user', select: 'profile email' },
+          { path: 'employmentDetails.department', select: 'name' }
+        ]
+      })
+      .populate('company', 'name')
+      .populate('shift', 'name')
+      .populate('approvalFlow.manager.approvedBy', 'profile email');
+
+    res.json({
+      success: true,
+      total,
+      page: Number(page),
+      totalPages: Math.ceil(total / limit),
+      count: regularizations.length,
+      regularizations
+    });
+  } catch (error) {
+    res.status(400).json({ success: false, message: error.message });
+  }
+};
+
+// Get regularizations for HR
+export const getRegularizationsForHR = async (req, res) => {
+  try {
+    const { hrId } = req.params;
+    const { status, page = 1, limit = 10 } = req.query;
+
+    const hrDepartments = await Department.find({ hr: hrId }).select('_id');
+    const departmentIds = hrDepartments.map(d => d._id);
+
+    const employees = await Employee.find({
+      'employmentDetails.department': { $in: departmentIds }
+    }).select('_id user');
+
+    const employeeIds = employees.map(e => e._id);
+
+  
+    // ⚡ Fix approval level query
+   let query = { 
+  employee: { $in: employeeIds },
+  $or: [
+    { currentApprovalLevel: "hr" },
+    { "approvalFlow.hr.status": { $in: ["approved", "rejected"] } }
+  ]
+};
+
+query.status = { $ne: "cancelled" };
+
+
+// Apply filter
+if (status && status !== "all") {
+  query.$or = [
+    { currentApprovalLevel: "hr", "approvalFlow.hr.status": status },
+    { "approvalFlow.hr.status": status }
+  ];
+}
+
+    const skip = (page - 1) * limit;
+    const total = await AttendanceRegularization.countDocuments(query);
+
+    const regularizations = await AttendanceRegularization.find(query)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(Number(limit))
+      .populate({
+        path: 'employee',
+        select: 'user employmentDetails',
+        populate: [
+          { path: 'user', select: 'profile email' },
+          { path: 'employmentDetails.department', select: 'name' }
+        ]
+      })
+      .populate('company', 'name')
+      .populate('shift', 'name')
+      .populate('approvalFlow.hr.approvedBy', 'profile email')
+      .populate('approvalFlow.manager.approvedBy', 'profile email');
+
+    res.json({
+      success: true,
+      total,
+      page: Number(page),
+      totalPages: Math.ceil(total / limit),
+      count: regularizations.length,
+      regularizations
+    });
+  } catch (error) {
+    res.status(400).json({ success: false, message: error.message });
+  }
+};
+
+// Get regularizations for Admin
+export const getRegularizationsForAdmin = async (req, res) => {
+  try {
+    const { adminId } = req.params;
+    const { status, page = 1, limit = 10 } = req.query;
+
+    const adminUser = await User.findById(adminId).select('companyId');
+    if (!adminUser || !adminUser.companyId) {
+      throw new Error("Admin not associated with any company");
+    }
+
+   
+    // Build query - Admin comes after Manager
+     let query = { 
+      company: adminUser.companyId,
+      "approvalFlow.hr.status": "approved",
+      "approvalFlow.manager.status": "approved"
+    };
+
+   if (status && status !== "all") {
+  if (status === "pending") {
+    query.$and = [
+      { status: "pending" },
+      { "approvalFlow.hr.status": "approved" },
+      { "approvalFlow.manager.status": "approved" },
+      { "approvalFlow.admin.status": "pending" }  // ✅ key fix
+    ];
+    delete query.$or;
+  } else {
+    query.$and = [
+      { "approvalFlow.hr.status": "approved" },
+      { "approvalFlow.manager.status": "approved" },
+      { "approvalFlow.admin.status": status }
+    ];
+  }
+}
+
+query.status = { $ne: "cancelled" };
+
+
+    const skip = (page - 1) * limit;
+    const total = await AttendanceRegularization.countDocuments(query);
+
+    const regularizations = await AttendanceRegularization.find(query)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(Number(limit))
+      .populate({
+        path: 'employee',
+        select: 'user employmentDetails',
+        populate: [
+          { path: 'user', select: 'profile email' },
+          { path: 'employmentDetails.department', select: 'name' }
+        ]
+      })
+      .populate('company', 'name')
+      .populate('shift', 'name')
+      .populate('approvalFlow.manager.approvedBy', 'profile email')
+      .populate('approvalFlow.hr.approvedBy', 'profile email')
+      .populate('approvalFlow.admin.approvedBy', 'profile email');
+
+    res.json({
+      success: true,
+      total,
+      page: Number(page),
+      totalPages: Math.ceil(total / limit),
+      count: regularizations.length,
+      regularizations
+    });
+  } catch (error) {
+    res.status(400).json({ success: false, message: error.message });
+  }
+};
+
+// Bulk update regularizations
+export const bulkUpdateRegularizations = async (req, res) => {
+  try {
+    const { ids, action, level, comment, reason } = req.body;
+    const userId = req.user._id;
+
+    if (!ids || !Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({ success: false, message: "Regularization IDs are required" });
+    }
+
+    if (!["approve", "reject"].includes(action)) {
+      return res.status(400).json({ success: false, message: "Invalid action. Use 'approve' or 'reject'" });
+    }
+
+    if (!["manager", "hr", "admin"].includes(level)) {
+      return res.status(400).json({ success: false, message: "Invalid level. Use 'manager', 'hr', or 'admin'" });
+    }
+
+    if (action === "reject" && !reason) {
+      return res.status(400).json({ success: false, message: "Rejection reason is required" });
+    }
+
+    const session = await mongoose.startSession();
+    session.startTransaction();
+
+    try {
+      const regularizations = await AttendanceRegularization.find({ 
+        _id: { $in: ids },
+        currentApprovalLevel: level,
+        [`approvalFlow.${level}.status`]: 'pending'
+      }).session(session);
+
+      if (regularizations.length !== ids.length) {
+        const invalidRegularizations = ids.length - regularizations.length;
+        throw new Error(`${invalidRegularizations} regularizations are not eligible for ${level} ${action}`);
+      }
+
+      let updatePromises = [];
+
+      if (action === "approve") {
+        if (level === 'admin') {
+          updatePromises = regularizations.map(regularization => 
+            AttendanceRegularization.findByIdAndUpdate(
+              regularization._id,
+              {
+                [`approvalFlow.${level}.status`]: 'approved',
+                [`approvalFlow.${level}.approvedBy`]: userId,
+                [`approvalFlow.${level}.approvedAt`]: new Date(),
+                [`approvalFlow.${level}.comment`]: comment || '',
+                status: 'approved',
+                currentApprovalLevel: 'completed'
+              },
+              { new: true, session }
+            )
+          );
+        } else {
+          const nextLevel = level === 'hr' ? 'manager' : 'admin';
+          updatePromises = regularizations.map(regularization => 
+            AttendanceRegularization.findByIdAndUpdate(
+              regularization._id,
+              {
+                [`approvalFlow.${level}.status`]: 'approved',
+                [`approvalFlow.${level}.approvedBy`]: userId,
+                [`approvalFlow.${level}.approvedAt`]: new Date(),
+                [`approvalFlow.${level}.comment`]: comment || '',
+                currentApprovalLevel: nextLevel
+              },
+              { new: true, session }
+            )
+          );
+        }
+      } else if (action === "reject") {
+        updatePromises = regularizations.map(regularization => 
+          AttendanceRegularization.findByIdAndUpdate(
+            regularization._id,
+            {
+              [`approvalFlow.${level}.status`]: 'rejected',
+              [`approvalFlow.${level}.approvedBy`]: userId,
+              [`approvalFlow.${level}.approvedAt`]: new Date(),
+              [`approvalFlow.${level}.comment`]: reason,
+              status: 'rejected',
+              rejectedBy: userId,
+              rejectionReason: reason,
+              currentApprovalLevel: 'completed'
+            },
+            { new: true, session }
+          )
+        );
+      }
+
+      const updatedRegularizations = await Promise.all(updatePromises);
+
+      await session.commitTransaction();
+      session.endSession();
+
+      res.json({
+        success: true,
+        message: `${regularizations.length} regularizations ${action}d successfully at ${level} level`,
+        count: regularizations.length,
+        data: updatedRegularizations,
+      });
+
+    } catch (error) {
+      await session.abortTransaction();
+      session.endSession();
+      throw error;
+    }
+
+  } catch (error) {
+    console.error("Bulk Update Regularizations Error:", error);
+    res.status(400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+// Get all regularizations (existing function, updated with new fields)
 export const getRegularizations = async (req, res) => {
   try {
     const { companyId, status, employeeId, startDate, endDate, page = 1, limit = 10 } = req.query;
@@ -16,32 +865,25 @@ export const getRegularizations = async (req, res) => {
     if (employeeId) filter.employee = employeeId;
 
     if (startDate && endDate) {
-      filter.date = {
+      filter.from = {
         $gte: new Date(startDate),
         $lte: new Date(endDate)
       };
     }
 
     const skip = (parseInt(page) - 1) * parseInt(limit);
-
-    // Get total count for pagination
     const total = await AttendanceRegularization.countDocuments(filter);
 
-    // Get paginated results
     const regularizations = await AttendanceRegularization.find(filter)
       .populate('employee', 'employmentDetails personalDetails')
       .populate('user', 'email profile')
       .populate('createdBy', 'email profile')
       .populate('company', 'name registrationNumber email contactPhone')
       .populate('shift', 'name startTime endTime')
-      .populate({
-        path: 'reviewedBy',
-        select: 'user',
-        populate: {
-          path: 'user',
-          select: 'profile'
-        }
-      })
+      .populate('approvalFlow.manager.approvedBy', 'profile email')
+      .populate('approvalFlow.hr.approvedBy', 'profile email')
+      .populate('approvalFlow.admin.approvedBy', 'profile email')
+      .populate('rejectedBy', 'profile email')
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(parseInt(limit));
@@ -55,302 +897,49 @@ export const getRegularizations = async (req, res) => {
       data: regularizations
     });
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    res.status(500).json({ success: false, message: error.message });
   }
 };
 
-
-// Get a single regularization request
+// Get single regularization (existing function, updated with new fields)
 export const getRegularization = async (req, res) => {
   try {
     const regularization = await AttendanceRegularization.findById(req.params.id)
-        .populate('employee', 'employmentDetails personalDetails')
+      .populate('employee', 'employmentDetails personalDetails')
       .populate('user', 'email profile')
       .populate('createdBy', 'email profile')
       .populate('company', 'name registrationNumber email contactPhone')
       .populate('shift', 'name startTime endTime')
-      .populate({
-        path: 'reviewedBy',
-        select: 'user',
-        populate:{
-          path: 'user',
-          select:'profile'
-        }
-      });
+      .populate('approvalFlow.manager.approvedBy', 'profile email')
+      .populate('approvalFlow.hr.approvedBy', 'profile email')
+      .populate('approvalFlow.admin.approvedBy', 'profile email')
+      .populate('rejectedBy', 'profile email');
     
     if (!regularization) {
-      return res.status(404).json({ message: 'Regularization request not found' });
+      return res.status(404).json({ success: false, message: 'Regularization request not found' });
     }
     
-    res.json(regularization);
+    res.json({ success: true, data: regularization });
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    res.status(500).json({ success: false, message: error.message });
   }
 };
 
-// Create a new regularization request
-export const createRegularization = async (req, res) => {
-  try {
-    const {
-      employee,
-      user,
-      company,
-      from,
-      to,
-      shift,
-      requestedInTime,
-      requestedOutTime,
-      reason,
-      regularizationType
-    } = req.body;
-    
-    // Check if employee exists
-    const employeeExists = await Employee.findById(employee);
-    if (!employeeExists) {
-      return res.status(404).json({ message: 'Employee not found' });
-    }
-    const userExists = await User.findById(user);
-    if (!userExists) {
-      return res.status(404).json({ message: 'User not found' });
-    }
-    
-    // Check if company exists
-    const companyExists = await Company.findById(company);
-    if (!companyExists) {
-      return res.status(404).json({ message: 'Company not found' });
-    }
-    
-    // Check if shift exists
-    const shiftExists = await Shift.findById(shift);
-    if (!shiftExists) {
-      return res.status(404).json({ message: 'Shift not found' });
-    }
-    
-    // Check if regularization already exists for this date and employee
-    const existingRegularization = await AttendanceRegularization.findOne({
-      employee,
-      from: { $gte: new Date(from), $lte: new Date(to) }
-    });
-    
-    if (existingRegularization) {
-      return res.status(400).json({ message: 'Regularization request already exists for this date' });
-    }
-    
-    // Calculate total hours
-    const calculateHours = (inTime, outTime) => {
-      const [inHours, inMinutes] = inTime.split(':').map(Number);
-      const [outHours, outMinutes] = outTime.split(':').map(Number);
-      
-      let totalMinutes = (outHours * 60 + outMinutes) - (inHours * 60 + inMinutes);
-      if (totalMinutes < 0) totalMinutes += 24 * 60; // Handle overnight shifts
-      
-      return totalMinutes / 60;
-    };
-    
-    const totalHours = calculateHours(requestedInTime, requestedOutTime);
-    
-    const regularization = new AttendanceRegularization({
-      employee,
-      user, // Assuming user authentication is implemented
-      company,
-      from: new Date(from),
-      to: new Date(to),
-      shift,
-      requestedInTime,
-      requestedOutTime,
-      reason,
-      regularizationType,
-      totalHours,
-      createdBy: req.user._id
-    });
-    
-    const newRegularization = await regularization.save();
-    
-    // Populate the response
-    const populatedRegularization = await AttendanceRegularization.findById(newRegularization._id)
-       .populate('employee', 'employmentDetails.employeeId')
-      .populate('user', 'email profile')
-      .populate('company', 'name code')
-      .populate('shift', 'name startTime endTime');
-    
-    res.status(201).json(populatedRegularization);
-  } catch (error) {
-    res.status(400).json({ message: error.message });
-  }
-};
-
-// Update a regularization request (approve/reject)
-export const updateRegularization = async (req, res) => {
-  try {
-    const { status, reviewComments } = req.body;
-    const { id } = req.params;
-    const reviewedBy = req.user?.id; // Assuming user authentication is implemented
-    
-    const regularization = await AttendanceRegularization.findById(id);
-    if (!regularization) {
-      return res.status(404).json({ message: 'Regularization request not found' });
-    }
-    
-    if (status && ['approved', 'rejected', 'cancelled'].includes(status)) {
-      regularization.status = status;
-      regularization.reviewedBy = reviewedBy;
-      regularization.reviewDate = new Date();
-      regularization.reviewComments = reviewComments || regularization.reviewComments;
-      
-      // If approved, update the attendance record
-    //   if (status === 'approved') {
-    //     await updateAttendanceRecord(regularization);
-    //   }
-    }
-    
-    const updatedRegularization = await regularization.save();
-    
-    // Populate the response
-    const populatedRegularization = await AttendanceRegularization.findById(updatedRegularization._id)
-      .populate('employee', 'firstName lastName employeeId')
-      .populate('company', 'name code')
-      .populate('user', 'email profile')
-      .populate('shift', 'name startTime endTime')
-      .populate('reviewedBy', 'firstName lastName')
-      .populate('createdBy', 'email profile');
-
-    res.json(populatedRegularization);
-  } catch (error) {
-    console.log(error)
-    res.status(400).json({ message: error.message });
-  }
-};
-
-// Bulk update regularization requests
-export const bulkUpdateRegularizations = async (req, res) => {
-  try {
-    const { ids, status, reviewComments } = req.body; 
-    const reviewedBy = req.user?.id; // Assuming authentication middleware sets req.user
-
-    if (!ids || !Array.isArray(ids) || ids.length === 0) {
-      return res.status(400).json({ message: 'Please provide an array of regularization IDs' });
-    }
-
-    if (!status || !['approved', 'rejected', 'cancelled'].includes(status)) {
-      return res.status(400).json({ message: 'Invalid status provided' });
-    }
-
-    // Update multiple documents
-    await AttendanceRegularization.updateMany(
-      { _id: { $in: ids } },
-      {
-        $set: {
-          status,
-          reviewedBy,
-          reviewDate: new Date(),
-          reviewComments
-        }
-      }
-    );
-
-    // Fetch the updated records with population
-    const updatedRegularizations = await AttendanceRegularization.find({ _id: { $in: ids } })
-      .populate('employee', 'firstName lastName employeeId')
-      .populate('company', 'name code')
-      .populate('user', 'email profile')
-      .populate('shift', 'name startTime endTime')
-      .populate('reviewedBy', 'firstName lastName')
-      .populate('createdBy', 'email profile');
-
-    res.status(200).json({
-      success: true,
-      count: updatedRegularizations.length,
-      data: updatedRegularizations
-    });
-  } catch (error) {
-    console.log(error);
-    res.status(400).json({ message: error.message });
-  }
-};
-
-
-// Helper function to update attendance record when regularization is approved
-// async function updateAttendanceRecord(regularization) {
-//   try {
-//     const { employee, date, shift, requestedInTime, requestedOutTime } = regularization;
-    
-//     // Find or create attendance record
-//     let attendance = await Attendance.findOne({ employee, date });
-    
-//     if (!attendance) {
-//       attendance = new Attendance({
-//         employee,
-//         company: regularization.company,
-//         date,
-//         shift
-//       });
-//     }
-    
-//     // Update attendance with regularized times
-//     attendance.inTime = requestedInTime;
-//     attendance.outTime = requestedOutTime;
-//     attendance.shift = shift;
-//     attendance.regularized = true;
-//     attendance.regularizationRequest = regularization._id;
-    
-//     // Calculate total hours
-//     const calculateHours = (inTime, outTime) => {
-//       const [inHours, inMinutes] = inTime.split(':').map(Number);
-//       const [outHours, outMinutes] = outTime.split(':').map(Number);
-      
-//       let totalMinutes = (outHours * 60 + outMinutes) - (inHours * 60 + inMinutes);
-//       if (totalMinutes < 0) totalMinutes += 24 * 60; // Handle overnight shifts
-      
-//       return totalMinutes / 60;
-//     };
-    
-//     attendance.totalHours = calculateHours(requestedInTime, requestedOutTime);
-    
-//     // Determine status based on shift timing
-//     const shiftDetails = await Shift.findById(shift);
-//     if (shiftDetails) {
-//       const [shiftStartHours, shiftStartMinutes] = shiftDetails.startTime.split(':').map(Number);
-//       const shiftStartTotalMinutes = shiftStartHours * 60 + shiftStartMinutes;
-      
-//       const [inHours, inMinutes] = requestedInTime.split(':').map(Number);
-//       const inTotalMinutes = inHours * 60 + inMinutes;
-      
-//       // Check if late
-//       if (inTotalMinutes > shiftStartTotalMinutes + shiftDetails.gracePeriod) {
-//         attendance.lateMinutes = inTotalMinutes - shiftStartTotalMinutes;
-//         attendance.status = 'late';
-//       } else {
-//         attendance.status = 'present';
-//       }
-//     }
-    
-//     await attendance.save();
-//   } catch (error) {
-//     console.error('Error updating attendance record:', error);
-//     throw error;
-//   }
-// }
-
-
-
-
-
-// Delete a regularization request
+// Delete regularization (existing function)
 export const deleteRegularization = async (req, res) => {
   try {
     const regularization = await AttendanceRegularization.findById(req.params.id);
     if (!regularization) {
-      return res.status(404).json({ message: 'Regularization request not found' });
+      return res.status(404).json({ success: false, message: 'Regularization request not found' });
     }
     
-    // Check if regularization is already approved
     if (regularization.status === 'approved') {
-      return res.status(400).json({ message: 'Cannot delete an approved regularization request' });
+      return res.status(400).json({ success: false, message: 'Cannot delete an approved regularization request' });
     }
     
     await AttendanceRegularization.findByIdAndDelete(req.params.id);
-    res.json({ message: 'Regularization request deleted successfully' });
+    res.json({ success: true, message: 'Regularization request deleted successfully' });
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    res.status(500).json({ success: false, message: error.message });
   }
 };

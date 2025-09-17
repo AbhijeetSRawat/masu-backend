@@ -55,7 +55,7 @@ const reimbursementSchema = new mongoose.Schema({
   currentApprovalLevel: {
     type: String,
     enum: ['manager', 'hr', 'admin', 'completed'],
-    default: 'manager'
+    default: 'hr'
   },
   approvalFlow: {
     manager: {

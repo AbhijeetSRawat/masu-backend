@@ -656,7 +656,7 @@ export const bulkUpdateLeaves = async (req, res) => {
           );
         } else {
           // Intermediate approval - move to next level
-          const nextLevel = level === 'manager' ? 'hr' : 'admin';
+          const nextLevel = level === 'hr' ? 'manager' : 'admin';
           updatePromises = leaves.map(leave => 
             Leave.findByIdAndUpdate(
               leave._id,

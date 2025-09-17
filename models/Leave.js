@@ -51,7 +51,7 @@ const leaveSchema = new mongoose.Schema({
   currentApprovalLevel: {
     type: String,
     enum: [ 'hr', 'manager','admin', 'completed'],
-    default: 'manager'
+    default: 'hr'
   },
   rejectedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   rejectionReason: String,

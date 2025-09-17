@@ -868,7 +868,7 @@ export const bulkUpdateReimbursements = async (req, res) => {
           );
         } else {
           // Intermediate approval
-          const nextLevel = level === 'manager' ? 'hr' : 'admin';
+          const nextLevel = level === 'hr' ? 'manager' : 'admin';
           updatePromises = reimbursements.map(reimbursement => 
             Reimbursement.findByIdAndUpdate(
               reimbursement._id,

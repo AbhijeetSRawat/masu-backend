@@ -1,35 +1,132 @@
-import express from 'express';
+import express from "express";
 import {
+  createRegularization,
   getRegularizations,
   getRegularization,
-  createRegularization,
-  updateRegularization,
   deleteRegularization,
-  bulkUpdateRegularizations
-} from '../controllers/regularization-controller.js';
-import { protect } from '../controllers/auth-controllers.js';
-import { restrictTo } from '../middleware/authMiddleware.js';
-
-// Middleware (if you have authentication/authorization)
+  bulkUpdateRegularizations,
+  managerApproveRegularization,
+  hrApproveRegularization,
+  adminApproveRegularization,
+  rejectRegularization,
+  getPendingRegularizationsByLevel,
+  getRegularizationsForManager,
+  getRegularizationsForHR,
+  getRegularizationsForAdmin,
+  updateRegularizationByUser
+} from "../controllers/regularization-controller.js";
+import { protect, restrictTo } from "../middleware/authMiddleware.js";
 
 
 const router = express.Router();
 
-// ✅ GET all regularization requests (with optional filters)
-router.get('/', protect, restrictTo("superadmin", "admin", "employee","subadmin"), getRegularizations);
+/**
+ * ✅ Regular CRUD routes
+ */
+router.get(
+  "/",
+  protect,
+  restrictTo("superadmin", "admin", "employee", "subadmin"),
+  getRegularizations
+);
 
-// ✅ GET a single regularization request by ID
-router.get('/:id', protect, restrictTo("superadmin", "admin", "employee","subadmin"), getRegularization);
+router.get(
+  "/:id",
+  protect,
+  restrictTo("superadmin", "admin", "employee", "subadmin"),
+  getRegularization
+);
 
-// ✅ POST a new regularization request
-router.post('/', protect, restrictTo("superadmin", "admin", "employee","subadmin"), createRegularization);
+router.post(
+  "/",
+  protect,
+  restrictTo("superadmin", "admin", "employee", "subadmin"),
+  createRegularization
+);
 
-// ✅ PUT (update) a regularization request (e.g., approve/reject)
-router.put('/:id', protect, restrictTo("superadmin", "admin", "employee","subadmin"), updateRegularization);
+router.patch(
+  "/:regularizationId",
+  protect,
+  restrictTo("superadmin", "admin", "employee", "subadmin"),
+  updateRegularizationByUser
+);
 
-// ✅ DELETE a regularization request (if not approved)
-router.delete('/:id', protect, restrictTo("superadmin", "admin", "employee","subadmin"), deleteRegularization);
+router.delete(
+  "/:id",
+  protect,
+  restrictTo("superadmin", "admin", "employee", "subadmin"),
+  deleteRegularization
+);
 
-router.patch('/bulkupdate', protect, restrictTo("superadmin", "admin","subadmin"), bulkUpdateRegularizations);
+router.patch(
+  "/bulkupdate",
+  protect,
+  bulkUpdateRegularizations
+);
+
+/**
+ * ✅ Approval Routes
+ */
+router.patch(
+  "/:id/approve/manager",
+  protect,
+  restrictTo("manager"),
+  managerApproveRegularization
+);
+
+router.patch(
+  "/:id/approve/hr",
+  protect,
+  restrictTo("hr"),
+  hrApproveRegularization
+);
+
+router.patch(
+  "/:id/approve/admin",
+  protect,
+  restrictTo("admin", "superadmin"),
+  adminApproveRegularization
+);
+
+router.patch(
+  "/:id/reject",
+  protect,
+  restrictTo("manager", "hr", "admin", "superadmin"),
+  rejectRegularization
+);
+
+/**
+ * ✅ Pending Regularizations by level
+ */
+router.get(
+  "/pending/:level",
+  protect,
+  restrictTo("manager", "hr", "admin", "superadmin"),
+  getPendingRegularizationsByLevel
+);
+
+/**
+ * ✅ Role-based fetching
+ */
+router.get(
+  "/manager/:managerId",
+  protect,
+  restrictTo("manager", "superadmin"),
+  getRegularizationsForManager
+);
+
+router.get(
+  "/hr/:hrId",
+  protect,
+  restrictTo("hr", "superadmin"),
+  getRegularizationsForHR
+);
+
+router.get(
+  "/admin/:adminId",
+  protect,
+  restrictTo("admin", "superadmin"),
+  getRegularizationsForAdmin
+);
 
 export default router;
