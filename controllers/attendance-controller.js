@@ -20,8 +20,13 @@ export const getAttendances = async (req, res) => {
     }
     
     const attendances = await Attendance.find(filter)
-      .populate('employee', 'firstName lastName employeeId department designation')
-      .populate('company', 'name code')
+      .populate({
+        path: 'employee',
+        populate: {
+          path: 'user', select: 'profile email'
+        }
+      })
+      .populate('company', 'name email')
       .populate('shift', 'name startTime endTime')
       .populate('regularizationRequest')
       .sort({ date: -1 });
@@ -54,7 +59,8 @@ export const getAttendance = async (req, res) => {
 // Create a new attendance record
 export const createAttendance = async (req, res) => {
   try {
-    const { employee, company, date, shift, inTime, outTime, notes } = req.body;
+    // const { inTime, outTime } = req.body;
+    const { employee, company, date, shift,  notes, status } = req.body;
     
     // Check if employee exists
     const employeeExists = await Employee.findById(employee);
@@ -70,7 +76,7 @@ export const createAttendance = async (req, res) => {
     
     // Check if shift exists (if provided)
     if (shift) {
-      const shiftExists = await Shifts.findById(shift);
+      const shiftExists = await Shifts.findOne({ _id: shift, company: company });
       if (!shiftExists) {
         return res.status(404).json({ message: 'Shift not found' });
       }
@@ -91,50 +97,56 @@ export const createAttendance = async (req, res) => {
       company,
       date: new Date(date),
       shift: shift || employeeExists.shift,
-      inTime,
-      outTime,
+      // inTime,
+      // outTime,
+      status: status || 'absent',
       notes
     });
     
     // Calculate total hours and determine status
-    if (inTime && outTime) {
-      const totalHours = calculateHours(inTime, outTime);
-      attendance.totalHours = totalHours;
+    // if (inTime && outTime) {
+    //   const totalHours = calculateHours(inTime, outTime);
+    //   attendance.totalHours = totalHours;
       
-      // Determine status based on shift timing if shift is available
-      if (attendance.shift) {
-        const shiftDetails = await Shift.findById(attendance.shift);
-        if (shiftDetails) {
-          const [shiftStartHours, shiftStartMinutes] = shiftDetails.startTime.split(':').map(Number);
-          const shiftStartTotalMinutes = shiftStartHours * 60 + shiftStartMinutes;
+    //   // Determine status based on shift timing if shift is available
+    //   if (attendance.shift) {
+    //     const shiftDetails = await Shift.findById(attendance.shift);
+    //     if (shiftDetails) {
+    //       const [shiftStartHours, shiftStartMinutes] = shiftDetails.startTime.split(':').map(Number);
+    //       const shiftStartTotalMinutes = shiftStartHours * 60 + shiftStartMinutes;
           
-          const [inHours, inMinutes] = inTime.split(':').map(Number);
-          const inTotalMinutes = inHours * 60 + inMinutes;
+    //       const [inHours, inMinutes] = inTime.split(':').map(Number);
+    //       const inTotalMinutes = inHours * 60 + inMinutes;
           
-          // Check if late
-          if (inTotalMinutes > shiftStartTotalMinutes + shiftDetails.gracePeriod) {
-            attendance.lateMinutes = inTotalMinutes - shiftStartTotalMinutes;
-            attendance.status = 'late';
-          } else {
-            attendance.status = 'present';
-          }
+    //       // Check if late
+    //       if (inTotalMinutes > shiftStartTotalMinutes + shiftDetails.gracePeriod) {
+    //         attendance.lateMinutes = inTotalMinutes - shiftStartTotalMinutes;
+    //         attendance.status = 'late';
+    //       } else {
+    //         attendance.status = 'present';
+    //       }
           
-          // Check if half day
-          if (totalHours < shiftDetails.halfDayThreshold) {
-            attendance.status = 'half_day';
-          }
-        }
-      }
-    } else if (!inTime && !outTime) {
-      attendance.status = 'absent';
-    }
+    //       // Check if half day
+    //       if (totalHours < shiftDetails.halfDayThreshold) {
+    //         attendance.status = 'half_day';
+    //       }
+    //     }
+    //   }
+    // } else if (!inTime && !outTime) {
+    //   attendance.status = 'absent';
+    // }
     
     const newAttendance = await attendance.save();
-    
+ 
     // Populate the response
     const populatedAttendance = await Attendance.findById(newAttendance._id)
-      .populate('employee', 'firstName lastName employeeId')
-      .populate('company', 'name code')
+      .populate({
+        path: 'employee',
+        populate: {
+          path: 'user', select: 'profile email'
+        }
+      })
+      .populate('company', 'name email')
       .populate('shift', 'name startTime endTime');
     
     res.status(201).json(populatedAttendance);

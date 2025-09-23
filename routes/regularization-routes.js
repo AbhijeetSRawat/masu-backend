@@ -59,7 +59,7 @@ router.delete(
 );
 
 router.patch(
-  "/bulkupdate",
+  "/bulk/update",
   protect,
   bulkUpdateRegularizations
 );

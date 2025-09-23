@@ -40,6 +40,9 @@ import attendanceRoutes from './routes/attendance-routes.js';
 import reimbursementRoutes from './routes/reimbursement-routes.js';
 import reimbursementCategoryRoutes from './routes/reimbursement-category-routes.js';
 
+//PayrollRoutes
+import payrollRoutes from './routes/payrollRoutes.js';
+
 // ------------------- Initialize App -------------------
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -80,7 +83,7 @@ app.use('/api/table-structures', tableStructureRoutes);
 // Employees
 app.use('/api/employee', employeeRoutes);
 app.use('/api/resignation', resignationRoutes);
-app.use('/api/regularization', regularizationRoutes);
+ app.use('/api/regularization', regularizationRoutes);
 
 // Leave & Policy
 app.use('/api/leave', leaveRoutes);
@@ -93,6 +96,9 @@ app.use('/api/attendance', attendanceRoutes);
 // Reimbursements
 app.use('/api/reimbursements', reimbursementRoutes);
 app.use('/api/reimbursement-categories', reimbursementCategoryRoutes);
+
+// Payroll Routes
+app.use('/api/payroll',payrollRoutes);
 
 // ------------------- Start Server -------------------
 app.listen(PORT, () => {

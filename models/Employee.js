@@ -39,6 +39,15 @@ const employmentSchema = new mongoose.Schema({
     bonus: Number,
     taxDeductions: Number
   },
+        da: { type: Number, default: 0 },
+        hra_received: { type: Number, default: 0 },
+        other_allowances: { type: Number, default: 0 },
+        other_income: { type: Number, default: 0 },
+        deductions: {
+            type: Object,
+            default: {},
+        },
+        rent_paid: { type: Number, default: 0 },
   shift: { type: mongoose.Schema.Types.ObjectId, ref: 'Shift' },
   reportingTo: { type: mongoose.Schema.Types.ObjectId, ref: 'Employee' },
   skills: [String],

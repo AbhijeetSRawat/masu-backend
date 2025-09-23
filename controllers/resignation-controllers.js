@@ -1,108 +1,578 @@
 import Resignation from '../models/Resignation.js';
 import Employee from '../models/Employee.js';
 import User from '../models/User.js';
+import Department from '../models/Department.js';
+import mongoose from 'mongoose';
+
+// Helper for transaction handling
+const withTransaction = async (fn) => {
+  const session = await mongoose.startSession();
+  try {
+    session.startTransaction();
+    const result = await fn(session);
+    await session.commitTransaction();
+    return result;
+  } catch (error) {
+    await session.abortTransaction();
+    throw error;
+  } finally {
+    session.endSession();
+  }
+};
 
 // Employee applies for resignation
 export const applyForResignation = async (req, res) => {
   try {
-    const { resignationDate, reason, feedback } = req.body;
+    const resignation = await withTransaction(async (session) => {
+      const { resignationDate, reason, feedback } = req.body;
+      const { userId }= req.params;
+      
+      // Get employee details
+      const employee = await Employee.findOne({ user: userId })
+        .populate('company')
+        .session(session);
+      
+      if (!employee) {
+        throw new Error('Employee not found');
+      }
+      
+      if (employee.employmentDetails.resignation?.applied) {
+        throw new Error('Resignation already applied');
+      }
+      
+      // Calculate proposed last working date based on notice period
+      const noticePeriodDays = employee.employmentDetails.noticePeriod || 30;
+      const proposedLastWorkingDate = new Date(resignationDate);
+      proposedLastWorkingDate.setDate(proposedLastWorkingDate.getDate() + noticePeriodDays);
+      
+      // Create resignation record with three-level approval
+      const resignationData = {
+        employee: employee._id,
+        user: userId,
+        company: employee.company,
+        resignationDate: new Date(resignationDate),
+        proposedLastWorkingDate,
+        reason,
+        feedback,
+        status: 'pending',
+        currentApprovalLevel: 'hr',
+        approvalFlow: {
+          manager: { status: 'pending' },
+          hr: { status: 'pending' },
+          admin: { status: 'pending' }
+        }
+      };
+      
+      const [newResignation] = await Resignation.create([resignationData], { session });
+      
+      // Update employee status
+      await Employee.findByIdAndUpdate(employee._id, {
+        'employmentDetails.status': 'notice-period',
+        'employmentDetails.resignation.applied': true,
+        'employmentDetails.resignation.appliedDate': new Date(),
+        'employmentDetails.resignation.lastWorkingDate': proposedLastWorkingDate
+      }, { session });
+      
+      await newResignation.populate([
+        { path: 'employee', select: 'employmentDetails personalDetails' },
+        { path: 'user', select: 'email profile' },
+        { path: 'company', select: 'name' }
+      ]);
+      
+      return newResignation;
+    });
+
+    res.status(201).json({
+      success: true,
+      message: 'Resignation applied successfully and sent for manager approval',
+      resignation
+    });
+  } catch (error) {
+    res.status(400).json({ success: false, message: error.message });
+  }
+};
+
+// Manager approval
+export const managerApproveResignation = async (req, res) => {
+  try {
+    const { resignationId } = req.params;
+    const managerId = req.user._id;
+    const { comment } = req.body;
+
+    const resignation = await withTransaction(async (session) => {
+      const resignationDoc = await Resignation.findById(resignationId).session(session);
+      if (!resignationDoc) throw new Error("Resignation not found");
+      
+      if (resignationDoc.currentApprovalLevel !== "manager") {
+        throw new Error("Resignation is not awaiting manager approval");
+      }
+
+      if (resignationDoc.approvalFlow.manager.status !== "pending") {
+        throw new Error("Manager has already acted on this resignation");
+      }
+
+      // Update manager approval
+      resignationDoc.approvalFlow.manager.status = "approved";
+      resignationDoc.approvalFlow.manager.approvedBy = managerId;
+      resignationDoc.approvalFlow.manager.approvedAt = new Date();
+      resignationDoc.approvalFlow.manager.comment = comment || "";
+      
+      // Move to next level (HR)
+      resignationDoc.currentApprovalLevel = "admin";
+      
+      await resignationDoc.save({ session });
+      return resignationDoc;
+    });
+
+    res.json({
+      success: true,
+      message: "Resignation approved by manager and sent to HR",
+      resignation
+    });
+  } catch (error) {
+    res.status(400).json({ success: false, message: error.message });
+  }
+};
+
+// HR approval
+export const hrApproveResignation = async (req, res) => {
+  try {
+    const { resignationId } = req.params;
+    const hrId = req.user._id;
+    const { comment } = req.body;
+
+    const resignation = await withTransaction(async (session) => {
+      const resignationDoc = await Resignation.findById(resignationId).session(session);
+      if (!resignationDoc) throw new Error("Resignation not found");
+      
+      if (resignationDoc.currentApprovalLevel !== "hr") {
+        throw new Error("Resignation is not awaiting HR approval");
+      }
+
+      if (resignationDoc.approvalFlow.hr.status !== "pending") {
+        throw new Error("HR has already acted on this resignation");
+      }
+
+      // Update HR approval
+      resignationDoc.approvalFlow.hr.status = "approved";
+      resignationDoc.approvalFlow.hr.approvedBy = hrId;
+      resignationDoc.approvalFlow.hr.approvedAt = new Date();
+      resignationDoc.approvalFlow.hr.comment = comment || "";
+      
+      // Move to next level (Admin)
+      resignationDoc.currentApprovalLevel = "manager";
+      
+      await resignationDoc.save({ session });
+      return resignationDoc;
+    });
+
+    res.json({
+      success: true,
+      message: "Resignation approved by HR and sent to Admin",
+      resignation
+    });
+  } catch (error) {
+    res.status(400).json({ success: false, message: error.message });
+  }
+};
+
+// Admin approval (final)
+export const adminApproveResignation = async (req, res) => {
+  try {
+    const { resignationId } = req.params;
+    const adminId = req.user._id;
+    const { actualLastWorkingDate, comment } = req.body;
+
+    const resignation = await withTransaction(async (session) => {
+      const resignationDoc = await Resignation.findById(resignationId)
+        .populate('employee')
+        .session(session);
+      
+      if (!resignationDoc) throw new Error("Resignation not found");
+      
+      if (resignationDoc.currentApprovalLevel !== "admin") {
+        throw new Error("Resignation is not awaiting admin approval");
+      }
+
+      if (resignationDoc.approvalFlow.admin.status !== "pending") {
+        throw new Error("Admin has already acted on this resignation");
+      }
+
+      // Update admin approval
+      resignationDoc.approvalFlow.admin.status = "approved";
+      resignationDoc.approvalFlow.admin.approvedBy = adminId;
+      resignationDoc.approvalFlow.admin.approvedAt = new Date();
+      resignationDoc.approvalFlow.admin.comment = comment || "";
+      
+      // Complete the approval process
+      resignationDoc.status = "approved";
+      resignationDoc.currentApprovalLevel = "completed";
+      resignationDoc.approvedBy = adminId;
+      resignationDoc.approvalDate = new Date();
+      resignationDoc.actualLastWorkingDate = actualLastWorkingDate || 
+        resignationDoc.proposedLastWorkingDate;
+      
+      await resignationDoc.save({ session });
+      
+      // Update employee status
+      await Employee.findByIdAndUpdate(resignationDoc.employee._id, {
+        'employmentDetails.status': 'resigned',
+        'employmentDetails.resignation.approvedDate': new Date(),
+        'employmentDetails.resignation.lastWorkingDate': resignationDoc.actualLastWorkingDate,
+        'employmentDetails.lastWorkingDate': resignationDoc.actualLastWorkingDate
+      }, { session });
+      
+      return resignationDoc;
+    });
+
+    res.json({
+      success: true,
+      message: "Resignation approved by Admin",
+      resignation
+    });
+  } catch (error) {
+    res.status(400).json({ success: false, message: error.message });
+  }
+};
+
+// Reject at any level
+export const rejectResignation = async (req, res) => {
+  try {
+    const { resignationId } = req.params;
+    const userId = req.user._id;
+    const { reason, level } = req.body;
+
+    if (!reason) throw new Error("Rejection reason is required");
+    if (!["manager", "hr", "admin"].includes(level)) {
+      throw new Error("Invalid approval level");
+    }
+
+    const resignation = await withTransaction(async (session) => {
+      const resignationDoc = await Resignation.findById(resignationId)
+        .populate('employee')
+        .session(session);
+      
+      if (!resignationDoc) throw new Error("Resignation not found");
+      
+      if (resignationDoc.currentApprovalLevel !== level) {
+        throw new Error(`Resignation is not awaiting ${level} approval`);
+      }
+
+      if (resignationDoc.approvalFlow[level].status !== "pending") {
+        throw new Error(`${level} has already acted on this resignation`);
+      }
+
+      // Update rejection at the current level
+      resignationDoc.approvalFlow[level].status = "rejected";
+      resignationDoc.approvalFlow[level].approvedBy = userId;
+      resignationDoc.approvalFlow[level].approvedAt = new Date();
+      resignationDoc.approvalFlow[level].comment = reason;
+      
+      // Set overall status to rejected
+      resignationDoc.status = "rejected";
+      resignationDoc.rejectedBy = userId;
+      resignationDoc.rejectionReason = reason;
+      resignationDoc.currentApprovalLevel = "completed";
+      
+      await resignationDoc.save({ session });
+      
+      // Revert employee status
+      await Employee.findByIdAndUpdate(resignationDoc.employee._id, {
+        'employmentDetails.status': 'active',
+        'employmentDetails.resignation.applied': false,
+        'employmentDetails.resignation.appliedDate': null,
+        'employmentDetails.resignation.lastWorkingDate': null
+      }, { session });
+      
+      return resignationDoc;
+    });
+
+    res.json({
+      success: true,
+      message: `Resignation rejected by ${level}`,
+      resignation
+    });
+  } catch (error) {
+    res.status(400).json({ success: false, message: error.message });
+  }
+};
+
+// Get resignations pending at specific level
+export const getPendingResignationsByLevel = async (req, res) => {
+  try {
+    const { level } = req.params;
     const userId = req.user._id;
     
-    // Get employee details
-    const employee = await Employee.findOne({ user: userId })
-      .populate('company');
-    
-    if (!employee) {
-      return res.status(404).json({ message: 'Employee not found' });
+    if (!["manager", "hr", "admin"].includes(level)) {
+      return res.status(400).json({ success: false, message: "Invalid level" });
     }
-    
-    if (employee.employmentDetails.resignation.applied) {
-      return res.status(400).json({ message: 'Resignation already applied' });
-    }
-    
-    // Calculate proposed last working date based on notice period
-    const noticePeriodDays = employee.employmentDetails.noticePeriod || 30;
-    const proposedLastWorkingDate = new Date(resignationDate);
-    proposedLastWorkingDate.setDate(proposedLastWorkingDate.getDate() + noticePeriodDays);
-    
-    // Create resignation record
-    const resignation = new Resignation({
-      employee: employee._id,
-      user: userId,
-      company: employee.company,
-      resignationDate: new Date(resignationDate),
-      proposedLastWorkingDate,
-      reason,
-      feedback
-    });
-    
-    await resignation.save();
-    
-    // Update employee status
-    await Employee.findByIdAndUpdate(employee._id, {
-      'employmentDetails.status': 'notice-period',
-      'employmentDetails.resignation.applied': true,
-      'employmentDetails.resignation.appliedDate': new Date(),
-      'employmentDetails.resignation.lastWorkingDate': proposedLastWorkingDate
-    });
-    
-    res.status(201).json({
-      message: 'Resignation applied successfully',
-      resignation
-    });
-  } catch (error) {
-    console.log(error)
-    res.status(500).json({ message: error.message });
-  }
-};
 
-// Admin approves resignation
-export const approveResignation = async (req, res) => {
-  try {
-    const { resignationId, actualLastWorkingDate, notes } = req.body;
-    const approvedBy = req.user._id;
-    
-    const resignation = await Resignation.findById(resignationId)
-      .populate('employee');
-    
-    if (!resignation) {
-      return res.status(404).json({ message: 'Resignation not found' });
+    let query = { 
+      [`approvalFlow.${level}.status`]: "pending",
+      currentApprovalLevel: level
+    };
+
+    if (level === "manager") {
+      const managedDepartments = await Department.find({ manager: userId }).select('_id');
+      const departmentIds = managedDepartments.map(d => d._id);
+      
+      const employees = await Employee.find({ 
+        'employmentDetails.department': { $in: departmentIds } 
+      }).select('_id');
+      
+      const employeeIds = employees.map(e => e._id);
+      query.employee = { $in: employeeIds };
+    } else if (level === "hr") {
+      const hrDepartments = await Department.find({ hr: userId }).select('_id');
+      const departmentIds = hrDepartments.map(d => d._id);
+      
+      const employees = await Employee.find({ 
+        'employmentDetails.department': { $in: departmentIds } 
+      }).select('_id');
+      
+      const employeeIds = employees.map(e => e._id);
+      query.employee = { $in: employeeIds };
     }
-    
-    if (resignation.status !== 'pending') {
-      return res.status(400).json({ 
-        message: `Resignation is already ${resignation.status}` 
-      });
-    }
-    
-    // Update resignation
-    resignation.status = 'approved';
-    resignation.approvedBy = approvedBy;
-    resignation.approvalDate = new Date();
-    resignation.actualLastWorkingDate = actualLastWorkingDate || 
-      resignation.proposedLastWorkingDate;
-    
-    await resignation.save();
-    
-    // Update employee status
-    await Employee.findByIdAndUpdate(resignation.employee._id, {
-      'employmentDetails.status': 'resigned',
-      'employmentDetails.resignation.approvedDate': new Date(),
-      'employmentDetails.resignation.lastWorkingDate': resignation.actualLastWorkingDate,
-      'employmentDetails.lastWorkingDate': resignation.actualLastWorkingDate
-    });
-    
+
+    const { page = 1, limit = 10 } = req.query;
+    const skip = (page - 1) * limit;
+
+    const total = await Resignation.countDocuments(query);
+    const resignations = await Resignation.find(query)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(Number(limit))
+      .populate({
+        path: 'employee',
+        select: 'user employmentDetails',
+        populate: [
+          { path: 'user', select: 'profile' },
+          { path: 'employmentDetails.department', select: 'name' }
+        ]
+      })
+      .populate('company', 'name');
+
     res.json({
-      message: 'Resignation approved successfully',
-      resignation
+      success: true,
+      total,
+      page: Number(page),
+      totalPages: Math.ceil(total / limit),
+      count: resignations.length,
+      resignations
     });
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    res.status(400).json({ success: false, message: error.message });
   }
 };
 
+// Bulk update resignations with three-level approval
+export const bulkUpdateResignations = async (req, res) => {
+  try {
+    const { ids, action, level, comment, reason, actualLastWorkingDate } = req.body;
+    const userId = req.user._id;
 
-// Get resignations with filters
+    if (!ids || !Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({ success: false, message: "Resignation IDs are required" });
+    }
+
+    if (!["approve", "reject"].includes(action)) {
+      return res.status(400).json({ success: false, message: "Invalid action. Use 'approve' or 'reject'" });
+    }
+
+    if (!["manager", "hr", "admin"].includes(level)) {
+      return res.status(400).json({ success: false, message: "Invalid level. Use 'manager', 'hr', or 'admin'" });
+    }
+
+    if (action === "reject" && !reason) {
+      return res.status(400).json({ success: false, message: "Rejection reason is required" });
+    }
+
+    const session = await mongoose.startSession();
+    session.startTransaction();
+
+    try {
+      const resignations = await Resignation.find({ 
+        _id: { $in: ids },
+        currentApprovalLevel: level,
+        [`approvalFlow.${level}.status`]: 'pending'
+      }).populate('employee').session(session);
+
+      if (resignations.length !== ids.length) {
+        const invalidResignations = ids.length - resignations.length;
+        throw new Error(`${invalidResignations} resignations are not eligible for ${level} ${action}`);
+      }
+
+      let updatePromises = [];
+
+      if (action === "approve") {
+        if (level === 'admin') {
+          // Final approval
+          updatePromises = resignations.map(resignation => 
+            Resignation.findByIdAndUpdate(
+              resignation._id,
+              {
+                [`approvalFlow.${level}.status`]: 'approved',
+                [`approvalFlow.${level}.approvedBy`]: userId,
+                [`approvalFlow.${level}.approvedAt`]: new Date(),
+                [`approvalFlow.${level}.comment`]: comment || '',
+                status: 'approved',
+                currentApprovalLevel: 'completed',
+                approvedBy: userId,
+                approvalDate: new Date(),
+                actualLastWorkingDate: actualLastWorkingDate || resignation.proposedLastWorkingDate
+              },
+              { new: true, session }
+            )
+          );
+
+          // Update employee status for approved resignations
+          const employeeUpdates = resignations.map(resignation =>
+            Employee.findByIdAndUpdate(
+              resignation.employee._id,
+              {
+                'employmentDetails.status': 'resigned',
+                'employmentDetails.resignation.approvedDate': new Date(),
+                'employmentDetails.resignation.lastWorkingDate': actualLastWorkingDate || resignation.proposedLastWorkingDate,
+                'employmentDetails.lastWorkingDate': actualLastWorkingDate || resignation.proposedLastWorkingDate
+              },
+              { session }
+            )
+          );
+          await Promise.all(employeeUpdates);
+
+        } else {
+          // Intermediate approval
+          const nextLevel = level === 'hr' ? 'manager' : 'admin';
+          updatePromises = resignations.map(resignation => 
+            Resignation.findByIdAndUpdate(
+              resignation._id,
+              {
+                [`approvalFlow.${level}.status`]: 'approved',
+                [`approvalFlow.${level}.approvedBy`]: userId,
+                [`approvalFlow.${level}.approvedAt`]: new Date(),
+                [`approvalFlow.${level}.comment`]: comment || '',
+                currentApprovalLevel: nextLevel
+              },
+              { new: true, session }
+            )
+          );
+        }
+      } else if (action === "reject") {
+        // Rejection
+        updatePromises = resignations.map(resignation => 
+          Resignation.findByIdAndUpdate(
+            resignation._id,
+            {
+              [`approvalFlow.${level}.status`]: 'rejected',
+              [`approvalFlow.${level}.approvedBy`]: userId,
+              [`approvalFlow.${level}.approvedAt`]: new Date(),
+              [`approvalFlow.${level}.comment`]: reason,
+              status: 'rejected',
+              rejectedBy: userId,
+              rejectionReason: reason,
+              currentApprovalLevel: 'completed'
+            },
+            { new: true, session }
+          )
+        );
+
+        // Revert employee status for rejected resignations
+        const employeeUpdates = resignations.map(resignation =>
+          Employee.findByIdAndUpdate(
+            resignation.employee._id,
+            {
+              'employmentDetails.status': 'active',
+              'employmentDetails.resignation.applied': false,
+              'employmentDetails.resignation.appliedDate': null,
+              'employmentDetails.resignation.lastWorkingDate': null
+            },
+            { session }
+          )
+        );
+        await Promise.all(employeeUpdates);
+      }
+
+      const updatedResignations = await Promise.all(updatePromises);
+      await session.commitTransaction();
+      session.endSession();
+
+      res.json({
+        success: true,
+        message: `${resignations.length} resignations ${action}d successfully at ${level} level`,
+        count: resignations.length,
+        data: updatedResignations,
+      });
+
+    } catch (error) {
+      await session.abortTransaction();
+      session.endSession();
+      throw error;
+    }
+
+  } catch (error) {
+    console.error("Bulk Update Resignations Error:", error);
+    res.status(400).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+// Withdraw resignation (employee) - updated for three-level approval
+export const withdrawResignation = async (req, res) => {
+  try {
+   
+    const { resignationId } = req.params;
+    const userId = req?.user?._id;
+    
+    const resignation = await withTransaction(async (session) => {
+      const resignationDoc = await Resignation.findById(resignationId).session(session);
+   
+      if (!resignationDoc) {
+        throw new Error("Resignation not found");
+      }
+
+      // Check if the user owns this resignation
+      // if (resignationDoc.user.toString() !== userId.toString()) {
+      //   throw new Error("You can only withdraw your own resignation");
+      // }
+
+      // Check if the request is still withdrawable (before any approval)
+      if (resignationDoc.approvalFlow.manager.status !== 'pending' ||
+          resignationDoc.approvalFlow.hr.status !== 'pending' ||
+          resignationDoc.approvalFlow.admin.status !== 'pending') {
+        throw new Error("Cannot withdraw resignation after approval process has started");
+      }
+
+      // Update status to withdrawn
+      resignationDoc.status = 'withdrawn';
+      resignationDoc.currentApprovalLevel = 'completed';
+      
+      await resignationDoc.save({ session });
+
+      // Revert employee status
+      await Employee.findOneAndUpdate({ user: resignationDoc?.user }, {
+        'employmentDetails.status': 'active',
+        'employmentDetails.resignation.applied': false,
+        'employmentDetails.resignation.appliedDate': null,
+        'employmentDetails.resignation.lastWorkingDate': null
+      }, { session });
+
+      return resignationDoc;
+    });
+
+    res.json({
+      success: true,
+      message: "Resignation withdrawn successfully",
+      resignation
+    });
+
+  } catch (error) {
+    res.status(400).json({ success: false, message: error.message });
+  }
+};
+
+// Keep existing functions with updated population
 export const getResignations = async (req, res) => {
   try {
     const { status, companyId, page = 1, limit = 10 } = req.query;
@@ -112,9 +582,13 @@ export const getResignations = async (req, res) => {
     if (companyId) query.company = companyId;
     
     const resignations = await Resignation.find(query)
-      .populate('employee', 'employmentDetails.employeeId')
+      .populate('employee', 'employmentDetails personalDetails')
       .populate('user', 'email profile')
       .populate('approvedBy', 'profile')
+      .populate('approvalFlow.manager.approvedBy', 'profile email')
+      .populate('approvalFlow.hr.approvedBy', 'profile email')
+      .populate('approvalFlow.admin.approvedBy', 'profile email')
+      .populate('rejectedBy', 'profile email')
       .sort({ createdAt: -1 })
       .limit(limit * 1)
       .skip((page - 1) * limit);
@@ -122,244 +596,320 @@ export const getResignations = async (req, res) => {
     const total = await Resignation.countDocuments(query);
     
     res.json({
+      success: true,
       resignations,
       totalPages: Math.ceil(total / limit),
       currentPage: page,
       total
     });
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    res.status(500).json({ success: false, message: error.message });
   }
 };
 
-// Withdraw resignation (employee)
-export const withdrawResignation = async (req, res) => {
+// ... keep other existing functions with appropriate updates
+
+// Get resignations for manager
+export const getResignationsForManager = async (req, res) => {
   try {
-    const userId = req.user._id;
-    const { resignationId } = req.params;
-    
-    const resignation = await Resignation.findOne({
-      _id: resignationId,
-      user: userId
-    });
-    
-    if (!resignation) {
-      return res.status(404).json({ message: 'Resignation not found' });
-    }
-    
-    if (resignation.status !== 'pending') {
-      return res.status(400).json({ 
-        message: 'Cannot withdraw already processed resignation' 
-      });
-    }
-    
-    resignation.status = 'withdrawn';
-    await resignation.save();
-    
-    // Revert employee status
-    await Employee.findOneAndUpdate({ user: userId }, {
-      'employmentDetails.status': 'active',
-      'employmentDetails.resignation.applied': false,
-      'employmentDetails.resignation.appliedDate': null,
-      'employmentDetails.resignation.lastWorkingDate': null
-    });
-    
-    res.json({ message: 'Resignation withdrawn successfully' });
-  } catch (error) {
-    res.status(500).json({ message: error.message });
-  }
+    const { managerId } = req.params;
+    const { status, page = 1, limit = 10 } = req.query;
+
+    // Get departments managed by this user
+    const managedDepartments = await Department.find({ manager: managerId }).select('_id');
+    const departmentIds = managedDepartments.map(d => d._id);
+
+    // Get employees in those departments
+    const employees = await Employee.find({
+      'employmentDetails.department': { $in: departmentIds }
+    }).select('_id user');
+
+    const employeeIds = employees.map(e => e._id);
+
+       let query = {
+  employee: { $in: employeeIds },
+  $or: [
+    // Waiting for manager approval (only if HR approved)
+    { currentApprovalLevel: "manager", "approvalFlow.hr.status": "approved" },
+
+    // Already acted by manager
+    { "approvalFlow.manager.status": { $in: ["approved", "rejected"] } }
+  ]
 };
 
-export const getEmployeeResignation = async (req, res) => {
-  try {
-    const { employeeId } = req.params;
-    const userId = req.user.id;
-    const userRole = req.user.role;
+query.status = { $ne: "cancelled" };
 
-    // Find the employee
-    const employee = await Employee.findById(employeeId)
-      .populate('user', 'email role')
-      .populate('company', 'name');
-
-    if (!employee) {
-      return res.status(404).json({ message: 'Employee not found' });
-    }
-
-    // Authorization check
-    // Employees can only view their own resignation
-    // Admins/HR can view any resignation
-    if (userRole === 'employee' && employee.user._id.toString() !== userId) {
-      return res.status(403).json({ 
-        message: 'Not authorized to view this resignation' 
-      });
-    }
-
-    // Find resignation for this employee
-    const resignations = await Resignation.find({ employee: employeeId })
-      .populate('approvedBy', 'profile firstName lastName')
-      .populate('exitInterview.conductedBy', 'profile firstName lastName');
-
-    if (!resignations || resignations.length === 0) {
-      return res.status(404).json({
-        message: 'No resignation found for this employee',
-        hasResignation: false
-      });
-    }
-
-    res.json({
-      message: 'Resignation data retrieved successfully',
-      hasResignation: true,
-      resignations,
-      employee: {
-        id: employee._id,
-        employeeId: employee.employmentDetails.employeeId,
-        name: `${employee.personalDetails?.firstName || ''} ${employee.personalDetails?.lastName || ''}`.trim(),
-        department: employee.employmentDetails.department,
-        designation: employee.employmentDetails.designation
-      }
-    });
-  } catch (error) {
-    res.status(500).json({ message: error.message });
+   
+if (status && status !== "all") {
+  if (status === "pending") {
+    query.$and = [
+      { status: "pending" },
+      { currentApprovalLevel: "manager" },
+      { "approvalFlow.hr.status": "approved" }
+    ];
+    delete query.$or;
+  } else {
+    query.$or = [
+      { "approvalFlow.manager.status": status }
+    ];
   }
-};
+}
 
+    const skip = (page - 1) * limit;
+    const total = await Resignation.countDocuments(query);
 
-// Admin/HR rejects a resignation
-export const rejectResignation = async (req, res) => {
-  try {
-    const { resignationId, rejectionReason } = req.body;
-    const rejectedBy = req.user.id;
-
-    const resignation = await Resignation.findById(resignationId)
-      .populate('employee');
-
-    if (!resignation) {
-      return res.status(404).json({ message: 'Resignation not found' });
-    }
-
-    if (resignation.status !== 'pending') {
-      return res.status(400).json({ 
-        message: `Cannot reject resignation with status: ${resignation.status}` 
-      });
-    }
-
-    // Update resignation status to rejected
-    resignation.status = 'rejected';
-    resignation.rejectionReason = rejectionReason;
-    resignation.approvedBy = rejectedBy;
-    resignation.approvalDate = new Date();
-    await resignation.save();
-
-    // Revert employee status back to active
-    await Employee.findByIdAndUpdate(resignation.employee._id, {
-      'employmentDetails.status': 'active',
-      'employmentDetails.resignation.applied': false,
-      'employmentDetails.resignation.appliedDate': null,
-      'employmentDetails.resignation.lastWorkingDate': null
-    });
-
-    res.json({
-      message: 'Resignation rejected successfully',
-      resignation
-    });
-  } catch (error) {
-    res.status(500).json({ message: error.message });
-  }
-};
-
-// Get resignation by ID
-export const getResignationById = async (req, res) => {
-  try {
-    const { resignationId } = req.params;
-
-    const resignation = await Resignation.findById(resignationId)
-      .populate('employee', 'employmentDetails.employeeId personalDetails.firstName personalDetails.lastName employmentDetails.department employmentDetails.designation')
-      .populate('user', 'email profile')
-      .populate('approvedBy', 'profile firstName lastName')
-      .populate('exitInterview.conductedBy', 'profile firstName lastName')
-      .populate('company', 'name');
-
-    if (!resignation) {
-      return res.status(404).json({ message: 'Resignation not found' });
-    }
-
-    res.json({
-      message: 'Resignation retrieved successfully',
-      resignation
-    });
-  } catch (error) {
-    res.status(500).json({ message: error.message });
-  }
-};
-
-
-// ✅ Bulk update resignations (approve/reject)
-export const bulkUpdateResignations = async (req, res) => {
-  try {
-    const { ids, action, rejectionReason, actualLastWorkingDate, notes } = req.body;
-    const userId = req.user._id;
-
-    if (!ids || !Array.isArray(ids) || ids.length === 0) {
-      return res.status(400).json({ success: false, message: "Resignation IDs are required" });
-    }
-
-    if (!["approve", "reject"].includes(action)) {
-      return res.status(400).json({ success: false, message: "Invalid action" });
-    }
-
-    const updatedResignations = [];
-
-    for (const resignationId of ids) {
-      const resignation = await Resignation.findById(resignationId).populate("employee");
-      if (!resignation) continue;
-
-      if (resignation.status !== "pending") continue; // skip already processed
-
-      if (action === "reject") {
-        resignation.status = "rejected";
-        resignation.rejectionReason = rejectionReason || "";
-        resignation.approvedBy = userId;
-        resignation.approvalDate = new Date();
-
-        await resignation.save();
-
-        // Revert employee to active
-        await Employee.findByIdAndUpdate(resignation.employee._id, {
-          "employmentDetails.status": "active",
-          "employmentDetails.resignation.applied": false,
-          "employmentDetails.resignation.appliedDate": null,
-          "employmentDetails.resignation.lastWorkingDate": null,
-        });
-      } else if (action === "approve") {
-        resignation.status = "approved";
-        resignation.approvedBy = userId;
-        resignation.approvalDate = new Date();
-        resignation.actualLastWorkingDate =
-          actualLastWorkingDate || resignation.proposedLastWorkingDate;
-        resignation.notes = notes || "";
-
-        await resignation.save();
-
-        // Update employee to resigned
-        await Employee.findByIdAndUpdate(resignation.employee._id, {
-          "employmentDetails.status": "resigned",
-          "employmentDetails.resignation.approvedDate": new Date(),
-          "employmentDetails.resignation.lastWorkingDate": resignation.actualLastWorkingDate,
-          "employmentDetails.lastWorkingDate": resignation.actualLastWorkingDate,
-        });
-      }
-
-      updatedResignations.push(resignation);
-    }
+    const resignations = await Resignation.find(query)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(Number(limit))
+      .populate({
+        path: 'employee',
+        select: 'user employmentDetails personalDetails',
+        populate: [
+          {
+            path: 'user',
+            select: 'profile email',
+            populate: { path: 'profile', select: 'firstName lastName' }
+          },
+          { path: 'employmentDetails.department', select: 'name' }
+        ]
+      })
+      .populate('company', 'name')
+      .populate('approvalFlow.manager.approvedBy', 'profile email')
+      .populate('approvalFlow.hr.approvedBy', 'profile email');
 
     res.json({
       success: true,
-      message: `Resignations ${action}d successfully`,
-      count: updatedResignations.length,
-      data: updatedResignations,
+      total,
+      page: Number(page),
+      totalPages: Math.ceil(total / limit),
+      count: resignations.length,
+      resignations
     });
   } catch (error) {
-    console.error(error);
-    res.status(500).json({ success: false, message: error.message });
+    res.status(400).json({ success: false, message: error.message });
+  }
+};
+
+// Get resignations for HR
+export const getResignationsForHR = async (req, res) => {
+  try {
+    const { hrId } = req.params;
+    const { status, page = 1, limit = 10 } = req.query;
+
+    // Get departments where user is HR
+    const hrDepartments = await Department.find({ hr: hrId }).select("_id");
+    const departmentIds = hrDepartments.map((d) => d._id);
+
+    // Get employees in those departments
+    const employees = await Employee.find({
+      "employmentDetails.department": { $in: departmentIds },
+    }).select("_id user");
+
+    const employeeIds = employees.map((e) => e._id);
+
+    // Base query
+     // ⚡ Fix approval level query
+   let query = { 
+  employee: { $in: employeeIds },
+  $or: [
+    { currentApprovalLevel: "hr" },
+    { "approvalFlow.hr.status": { $in: ["approved", "rejected"] } }
+  ]
+};
+
+query.status = { $ne: "cancelled" };
+
+
+// Apply filter
+if (status && status !== "all") {
+  query.$or = [
+    { currentApprovalLevel: "hr", "approvalFlow.hr.status": status },
+    { "approvalFlow.hr.status": status }
+  ];
+}
+
+
+    const skip = (page - 1) * limit;
+    const total = await Resignation.countDocuments(query);
+
+    const resignations = await Resignation.find(query)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(Number(limit))
+      .populate({
+        path: "employee",
+        select: "user employmentDetails personalDetails",
+        populate: [
+          {
+            path: "user",
+            select: "profile email",
+            populate: { path: "profile", select: "firstName lastName" },
+          },
+          { path: "employmentDetails.department", select: "name" },
+        ],
+      })
+      .populate("company", "name")
+      .populate("approvalFlow.hr.approvedBy", "profile email")
+      .populate("approvalFlow.manager.approvedBy", "profile email");
+
+    res.json({
+      success: true,
+      total,
+      page: Number(page),
+      totalPages: Math.ceil(total / limit),
+      count: resignations.length,
+      resignations,
+    });
+  } catch (error) {
+    res.status(400).json({ success: false, message: error.message });
+  }
+};
+
+// Get resignations for Admin
+export const getResignationsForAdmin = async (req, res) => {
+  try {
+    const { adminId } = req.params;
+    const { status, page = 1, limit = 10, department } = req.query;
+
+    const adminUser = await User.findById(adminId).select('companyId');
+    if (!adminUser || !adminUser.companyId) {
+      throw new Error("Admin not associated with any company");
+    }
+
+   // Build query - Admin comes after Manager
+     let query = { 
+      company: adminUser.companyId,
+      "approvalFlow.hr.status": "approved",
+      "approvalFlow.manager.status": "approved"
+    };
+
+   if (status && status !== "all") {
+    if (status === "pending") {
+      query.$and = [
+        { status: "pending" },
+        { "approvalFlow.hr.status": "approved" },
+        { "approvalFlow.manager.status": "approved" },
+        { "approvalFlow.admin.status": "pending" }  // ✅ key fix
+      ];
+      delete query.$or;
+    } else {
+      query.$and = [
+        { "approvalFlow.hr.status": "approved" },
+        { "approvalFlow.manager.status": "approved" },
+        { "approvalFlow.admin.status": status }
+      ];
+    }
+  }
+
+  query.status = { $ne: "cancelled" };
+
+    // Filter by department if provided
+    if (department) {
+      const employeesInDept = await Employee.find({
+        'employmentDetails.department': department,
+        company: adminUser.companyId
+      }).select('_id');
+      const employeeIds = employeesInDept.map(e => e._id);
+      query.employee = { $in: employeeIds };
+    }
+
+    const skip = (page - 1) * limit;
+    const total = await Resignation.countDocuments(query);
+
+    const resignations = await Resignation.find(query)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(Number(limit))
+      .populate({
+        path: 'employee',
+        select: 'user employmentDetails personalDetails',
+        populate: [
+          {
+            path: 'user',
+            select: 'profile email',
+            populate: { path: 'profile', select: 'firstName lastName' }
+          },
+          { path: 'employmentDetails.department', select: 'name' }
+        ]
+      })
+      .populate('company', 'name')
+      .populate('approvalFlow.manager.approvedBy', 'profile email')
+      .populate('approvalFlow.hr.approvedBy', 'profile email')
+      .populate('approvalFlow.admin.approvedBy', 'profile email');
+
+    res.json({
+      success: true,
+      total,
+      page: Number(page),
+      totalPages: Math.ceil(total / limit),
+      count: resignations.length,
+      resignations
+    });
+  } catch (error) {
+    res.status(400).json({ success: false, message: error.message });
+  }
+};
+
+// Get resignations for Employee
+export const getResignationsForEmployee = async (req, res) => {
+  try {
+    const { employeeId } = req.params;
+    const { status, page = 1, limit = 10 } = req.query;
+
+    const employee = await Employee.findById(employeeId);
+    if (!employee) {
+      throw new Error("Employee not found");
+    }
+
+    let query = { employee: employee._id };
+
+    if (status && status !== 'all') query.status = status;
+
+    const skip = (page - 1) * limit;
+    const total = await Resignation.countDocuments(query);
+
+    const resignations = await Resignation.find(query)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(Number(limit))
+      .populate('company', 'name')
+      .populate('approvalFlow.manager.approvedBy', 'profile email')
+      .populate('approvalFlow.hr.approvedBy', 'profile email')
+      .populate('approvalFlow.admin.approvedBy', 'profile email');
+
+    res.json({
+      success: true,
+      total,
+      page: Number(page),
+      totalPages: Math.ceil(total / limit),
+      count: resignations.length,
+      resignations
+    });
+  } catch (error) {
+    res.status(400).json({ success: false, message: error.message });
+  }
+};
+
+
+
+export const resetResignationForAll = async (req, res) => {
+  try {
+    const result = await Employee.updateMany(
+      {}, // empty filter → affects all employees
+      { $set: { "employmentDetails.resignation.applied": false } }
+    );
+
+    res.status(200).json({
+      success: true,
+      message: "Resignation status reset for all employees",
+      modifiedCount: result.modifiedCount
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: "Failed to reset resignation status",
+      error: error.message
+    });
   }
 };

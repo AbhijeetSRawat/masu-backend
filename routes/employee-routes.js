@@ -15,7 +15,7 @@ router.get('/getemployee/:employeeId', getEmployee);
 router.put('/update/:employeeId', updateBasicEmployeeInfo);
 router.put('/uploadDocument/:employeeId', protect, restrictTo("admin", "superadmin","newjoiner","employee","subadmin","hr","manager"), uploadDocument);
 router.get('/getEmployeeDocument/:employeeId', protect, restrictTo("admin", "superadmin","employee","newjoiner","subadmin","hr","manager"), getEmployeeDocuments);
-router.get('/getallpagination/:companyId', getAllEmployeesByCompanyIdPagination);
+ router.get('/getallpagination/:companyId', getAllEmployeesByCompanyIdPagination);
 router.get('/monthWiseEmployees/:year/:month/:companyId', protect, restrictTo("superadmin", "admin","subadmin","hr","manager"), getEmployeesByMonth);
 router.get('/getallnewjoiners/:companyId', protect, restrictTo("superadmin", "admin","subadmin","hr","manager"), getAllNewJoinerByCompanyId);
 router.patch('/makeUserInActive/:employeeId', protect, restrictTo("superadmin", "admin","subadmin","hr","manager"), makeuserinactive);

@@ -1,25 +1,28 @@
-// routes/attendance-routes.js
-import express from 'express';
+import express from "express";
 import {
+  getAttendances,
+  getAttendance,
   createAttendance,
   updateAttendance,
-  getAttendances,
-  getAttendance
-} from '../controllers/attendance-controller.js';
-import { protect } from '../middleware/authMiddleware.js';
+  deleteAttendance,
+} from "../controllers/attendance-controller.js";
+import { protect } from "../middleware/authMiddleware.js";
 
 const router = express.Router();
 
-// 🟢 Mark attendance
-router.post('/', protect,  createAttendance);
+// Get all attendances (with filters via query params)
+router.get("/",  getAttendances);
 
-// 🟡 Update in/out time for a given attendance record
-router.put('/:id', protect, updateAttendance);
+// Get a single attendance by ID
+router.get("/:id", protect, getAttendance);
 
-// 🔵 Get all attendance of a company
-router.get('/company/:companyId', protect, getAttendances);
+// Create a new attendance record
+router.post("/", createAttendance);
 
-// 🔵 Get all attendance of a specific employee
-router.get('/employee/:employeeId', protect, getAttendance);
+// // Update an attendance record by ID
+// router.put("/:id", protect, updateAttendance);
+
+// // Delete an attendance record by ID
+// router.delete("/:id", protect, deleteAttendance);
 
 export default router;

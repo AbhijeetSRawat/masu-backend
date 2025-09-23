@@ -1,21 +1,51 @@
 import express from 'express';
+import {
+  applyForResignation,
+  getResignations,
+  withdrawResignation,
+  getResignationsForManager,
+  getResignationsForHR,
+  getResignationsForAdmin,
+  getResignationsForEmployee,
+  managerApproveResignation,
+  hrApproveResignation,
+  adminApproveResignation,
+  rejectResignation,
+  bulkUpdateResignations,
+  resetResignationForAll
+} from '../controllers/resignation-controllers.js';
+import { protect, restrictTo } from '../middleware/authMiddleware.js';
 
-
-import { applyForResignation, approveResignation, bulkUpdateResignations, getEmployeeResignation, getResignationById, getResignations, rejectResignation, withdrawResignation } from '../controllers/resignation-controllers.js';
-import { protect, restrictTo } from '../controllers/auth-controllers.js';
 
 const router = express.Router();
 
 // Employee routes
-router.post('/apply', protect, restrictTo("superadmin", "admin", "employee","subadmin"), applyForResignation);
-router.patch('/withdraw/:resignationId', protect, restrictTo("superadmin", "admin", "employee","subadmin"), withdrawResignation);
+router.post('/apply/:userId', protect, applyForResignation);
+router.put('/withdraw/:resignationId', protect, withdrawResignation);
+router.get('/employee/:employeeId', protect, getResignationsForEmployee);
 
-// Admin/HR routes
-router.patch('/approve', protect, restrictTo("superadmin", "admin", "hr","subadmin"), approveResignation);
-router.get('/', protect, restrictTo("superadmin","admin", "hr","subadmin"), getResignations);
-router.get('/:employeeId', protect, restrictTo("superadmin", "admin", "hr","employee","subadmin"), getEmployeeResignation);
-router.patch('/reject', protect, restrictTo("superadmin", "admin", "hr","subadmin"), rejectResignation);
-router.get('/resignation/:resignationId', protect, restrictTo("superadmin", "admin", "hr","employee","subadmin"), getResignationById);
-router.patch('/bulkupdate', protect, restrictTo("superadmin", "admin","subadmin"), bulkUpdateResignations);
+// Manager routes
+router.put('/manager-approval/:resignationId', protect, restrictTo('manager', 'admin'), managerApproveResignation);
+router.get('/manager/:managerId', protect, restrictTo('manager', 'admin'), getResignationsForManager);
+
+// HR routes
+router.put('/hr-approval/:resignationId', protect, restrictTo('hr', 'admin'), hrApproveResignation);
+router.get('/hr/:hrId', protect, restrictTo('hr', 'admin'), getResignationsForHR);
+
+// Admin routes
+router.put('/admin-approval/:resignationId', protect, restrictTo('admin'), adminApproveResignation);
+router.get('/admin/:adminId', protect, restrictTo('admin'), getResignationsForAdmin);
+
+//bulk-update
+router.put('/bulk-update', protect, restrictTo('manager', 'hr', 'admin','manager','superadmin'), bulkUpdateResignations)
+
+//reject
+router.put('/reject/:resignationId', protect, restrictTo('manager', 'hr', 'admin','manager','superadmin'), rejectResignation)
+
+// General routes
+router.get('/', protect, getResignations);
+
+router.put('/test', resetResignationForAll)
+
 
 export default router;

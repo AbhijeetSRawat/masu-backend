@@ -15,10 +15,10 @@ import Leave from '../models/Leave.js';
 import EmployeeLeaveBalance from '../models/EmployeeLeaveBalance.js';
 import Employee from '../models/Employee.js';
 import Department from '../models/Department.js';
-
 import AttendanceRegularization from '../models/AttendanceRegularization.js';
 import Counter from '../models/Counter.js';
 import uploadFileToCloudinary from "../utils/fileUploader.js";
+
 const getNextCompanyId = async () => {
   const result = await Counter.findOneAndUpdate(
     { _id: 'companyId' },
