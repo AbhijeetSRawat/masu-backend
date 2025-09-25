@@ -70,14 +70,14 @@ router.patch(
 router.patch(
   "/:id/approve/manager",
   protect,
-  restrictTo("manager"),
+  restrictTo("manager","admin","superadmin"),
   managerApproveRegularization
 );
 
 router.patch(
   "/:id/approve/hr",
   protect,
-  restrictTo("hr"),
+  restrictTo("hr","admin","superadmin"),
   hrApproveRegularization
 );
 
@@ -111,14 +111,14 @@ router.get(
 router.get(
   "/manager/:managerId",
   protect,
-  restrictTo("manager", "superadmin"),
+  restrictTo("manager", "superadmin","admin"),
   getRegularizationsForManager
 );
 
 router.get(
   "/hr/:hrId",
   protect,
-  restrictTo("hr", "superadmin"),
+  restrictTo("hr", "superadmin","admin"),
   getRegularizationsForHR
 );
 

@@ -1231,3 +1231,130 @@ export const getLeaveDashboardStats = async (req, res) => {
 
 
 // flow is hr manager admin
+// Alternative version with approval level filtering
+// export const getRestLeaveOfEmployee = async (req, res) => {
+//   const { employeeId } = req.params;
+//   const { year = new Date().getFullYear(), includePending = true } = req.query;
+
+//   try {
+//     const yearStart = new Date(year, 0, 1);
+//     const yearEnd = new Date(year, 11, 31);
+
+//     // Build query based on whether to include pending leaves
+//     const query = {
+//       employee: employeeId,
+//       startDate: { $gte: yearStart, $lte: yearEnd }
+//     };
+
+//     if (!includePending) {
+//       query.status = { $in: ['approved', 'rejected', 'cancelled'] };
+//     }
+
+//     const leaves = await Leave.find(query);
+
+//     // Rest of the function remains the same...
+//     const summary = {};
+
+//     leaves.forEach((leave) => {
+//       const status = leave.status;
+      
+//       leave.leaveBreakup.forEach((item) => {
+//         const { leaveType, shortCode, days } = item;
+
+//         if (!summary[leaveType]) {
+//           summary[leaveType] = {
+//             approved: { count: 0, days: 0 },
+//             rejected: { count: 0, days: 0 },
+//             pending: { count: 0, days: 0 },
+//             cancelled: { count: 0, days: 0 },
+//             totalDays: 0,
+//             shortCode
+//           };
+//         }
+
+//         summary[leaveType][status].count += 1;
+//         summary[leaveType][status].days += days;
+//         summary[leaveType].totalDays += days;
+//       });
+//     });
+
+//     res.json({
+//       success: true,
+//       employeeId,
+//       year: parseInt(year),
+//       summary,
+//       includePending: includePending === 'true'
+//     });
+//   } catch (error) {
+//     console.error("getRestLeaveOfEmployee Error:", error);
+//     res.status(500).json({
+//       success: false,
+//       message: error.message
+//     });
+//   }
+// };
+
+
+export const getRestLeaveOfEmployee = async (req, res) => {
+  const { employeeId } = req.params;
+  const { year = new Date().getFullYear() } = req.query;
+
+
+  try {
+    // Get all leaves for the year
+    const yearStart = new Date(year, 0, 1);
+    const yearEnd = new Date(year, 11, 31);
+
+    const leaves = await Leave.find({
+      employee: employeeId,
+      startDate: { $gte: yearStart, $lte: yearEnd }
+    });
+
+
+
+    // Summary object
+    const summary = {};
+
+    leaves.forEach((leave) => {
+      const status = leave.status; // approved / rejected / pending / cancelled
+
+      // Each leave can have multiple breakup items (e.g., 2 CL + 3 PL)
+      leave.leaveBreakup.forEach((item) => {
+        const { leaveType, shortCode, days } = item;
+
+        if (!summary[leaveType]) {
+          summary[leaveType] = {
+            approved: { count: 0, days: 0 },
+            rejected: { count: 0, days: 0 },
+            pending: { count: 0, days: 0 },
+            cancelled: { count: 0, days: 0 },
+            totalDays: 0,
+            shortCode
+          };
+        }
+
+        // increment counts by status
+        summary[leaveType][status].count += 1;
+        summary[leaveType][status].days += days;
+
+        // always add total days (irrespective of status)
+        summary[leaveType].totalDays += days;
+
+      });
+    });
+
+
+    res.json({
+      success: true,
+      employeeId,
+      year: parseInt(year),
+      summary
+    });
+  } catch (error) {
+    console.error("getRestLeaveOfEmployee Error:", error);
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+}; 
