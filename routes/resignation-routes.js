@@ -25,16 +25,16 @@ router.put('/withdraw/:resignationId', protect, withdrawResignation);
 router.get('/employee/:employeeId', protect, getResignationsForEmployee);
 
 // Manager routes
-router.put('/manager-approval/:resignationId', protect, restrictTo('manager', 'admin'), managerApproveResignation);
-router.get('/manager/:managerId', protect, restrictTo('manager', 'admin'), getResignationsForManager);
+router.put('/manager-approval/:resignationId', protect, restrictTo('manager', 'admin',"superadmin"), managerApproveResignation);
+router.get('/manager/:managerId', protect, restrictTo('manager', 'admin',"superadmin"), getResignationsForManager);
 
 // HR routes
-router.put('/hr-approval/:resignationId', protect, restrictTo('hr', 'admin'), hrApproveResignation);
-router.get('/hr/:hrId', protect, restrictTo('hr', 'admin'), getResignationsForHR);
+router.put('/hr-approval/:resignationId', protect, restrictTo('hr', 'admin',"superadmin"), hrApproveResignation);
+router.get('/hr/:hrId', protect, restrictTo('hr', 'admin',"superadmin"), getResignationsForHR);
 
 // Admin routes
-router.put('/admin-approval/:resignationId', protect, restrictTo('admin'), adminApproveResignation);
-router.get('/admin/:adminId', protect, restrictTo('admin'), getResignationsForAdmin);
+router.put('/admin-approval/:resignationId', protect, restrictTo('admin',"superadmin"), adminApproveResignation);
+router.get('/admin/:adminId', protect, restrictTo('admin',"superadmin"), getResignationsForAdmin);
 
 //bulk-update
 router.put('/bulk-update', protect, restrictTo('manager', 'hr', 'admin','manager','superadmin'), bulkUpdateResignations)

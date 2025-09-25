@@ -5,8 +5,12 @@ import {
   createAttendance,
   updateAttendance,
   deleteAttendance,
+  getEmployeesUnderHRorManager,
+  bulkCreateAttendance,
+  getAttendanceByDate,
+  bulkUpdateAttendance,
 } from "../controllers/attendance-controller.js";
-import { protect } from "../middleware/authMiddleware.js";
+import { protect, restrictTo } from "../middleware/authMiddleware.js";
 
 const router = express.Router();
 
@@ -19,8 +23,16 @@ router.get("/:id", protect, getAttendance);
 // Create a new attendance record
 router.post("/", createAttendance);
 
-// // Update an attendance record by ID
-// router.put("/:id", protect, updateAttendance);
+router.get('/employeeUnderHR/:userId', protect, getEmployeesUnderHRorManager);
+router.post('/bulkattendance', protect, bulkCreateAttendance);
+router.get('/getbydate/:userId', protect, getAttendanceByDate);
+
+// Single Update (Only HR)
+router.put("/attendance/:id",protect, restrictTo("superadmin","admin","hr","manager"), updateAttendance);
+
+
+// Bulk Update (Only HR)
+router.put("/bulkupdateattendance", protect, restrictTo("superadmin","admin","hr","manager"),bulkUpdateAttendance);
 
 // // Delete an attendance record by ID
 // router.delete("/:id", protect, deleteAttendance);
