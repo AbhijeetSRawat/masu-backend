@@ -9,32 +9,61 @@ import {
   bulkCreateAttendance,
   getAttendanceByDate,
   bulkUpdateAttendance,
+  getEmployeeAttendanceSummary,
+  getDepartmentAttendanceSummary
 } from "../controllers/attendance-controller.js";
 import { protect, restrictTo } from "../middleware/authMiddleware.js";
 
 const router = express.Router();
 
-// Get all attendances (with filters via query params)
-router.get("/",  getAttendances);
+// Apply protection to all routes
+router.use(protect);
 
-// Get a single attendance by ID
-router.get("/:id", protect, getAttendance);
+// ==============================
+// ATTENDANCE CRUD ROUTES
+// ==============================
 
-// Create a new attendance record
+// Get all attendances with filtering
+router.get("/", getAttendances);
+
+// Get specific attendance
+router.get("/record/:id", getAttendance);
+
+// Create attendance
 router.post("/", createAttendance);
 
-router.get('/employeeUnderHR/:userId', protect, getEmployeesUnderHRorManager);
-router.post('/bulkattendance', protect, bulkCreateAttendance);
-router.get('/getbydate/:userId', protect, getAttendanceByDate);
+// ==============================
+// BULK OPERATIONS
+// ==============================
 
-// Single Update (Only HR)
-router.put("/attendance/:id",protect, restrictTo("superadmin","admin","hr","manager"), updateAttendance);
+router.post("/bulk/create", bulkCreateAttendance);
 
+// ==============================
+// SUMMARY & ANALYTICS ROUTES
+// ==============================
 
-// Bulk Update (Only HR)
-router.put("/bulkupdateattendance", protect, restrictTo("superadmin","admin","hr","manager"),bulkUpdateAttendance);
+router.get("/summary/employee", getEmployeeAttendanceSummary);
+router.get("/summary/department", getDepartmentAttendanceSummary);
 
-// // Delete an attendance record by ID
-// router.delete("/:id", protect, deleteAttendance);
+// ==============================
+// HR/MANAGER SPECIFIC ROUTES
+// ==============================
+
+// Get team employees
+router.get("/hr-manager/employees/:userId", getEmployeesUnderHRorManager);
+
+// Date-based filtering
+router.get("/date/filter/:userId", getAttendanceByDate);
+
+// ==============================
+// RESTRICTED ADMIN ROUTES
+// ==============================
+
+// Update operations (HR/Manager/Admin only)
+router.put("/:id", restrictTo("superadmin", "admin", "hr", "manager","employee"), updateAttendance);
+router.put("/bulk/update", restrictTo("superadmin", "admin", "hr", "manager"), bulkUpdateAttendance);
+
+// Delete operations (HR/Admin only - managers typically can't delete)
+router.delete("/:id", restrictTo("superadmin", "admin", "hr"), deleteAttendance);
 
 export default router;

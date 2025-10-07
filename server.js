@@ -43,6 +43,24 @@ import reimbursementCategoryRoutes from './routes/reimbursement-category-routes.
 //PayrollRoutes
 import payrollRoutes from './routes/payrollRoutes.js';
 
+//CTC Annexure
+import ctcAnnexureRoutes from './routes/ctc-routes.js';
+
+// Flexi Benefits and
+import flexiBasketRoutes from './routes/flexi-routes.js';
+
+// Perks
+import perkRoutes from './routes/perk-routes.js';
+
+// Payment & Deductions
+import paymentRoutes from './routes/payment-routes.js';
+
+//taxes
+import taxRoutes from './routes/tax-routes.js';
+
+//payroll new
+ import payrollNewRoutes from './routes/payrollNew-routes.js';
+
 // ------------------- Initialize App -------------------
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -100,7 +118,40 @@ app.use('/api/reimbursement-categories', reimbursementCategoryRoutes);
 // Payroll Routes
 app.use('/api/payroll',payrollRoutes);
 
+// CTC Annexure
+app.use('/api/ctc', ctcAnnexureRoutes);
+
+// Flexi Benefits
+app.use('/api/flexi', flexiBasketRoutes);
+
+// Perks
+app.use('/api/perks', perkRoutes);
+
+// Payment & Deductions
+app.use('/api/payments', paymentRoutes);
+
+// Taxes
+app.use('/api/tax', taxRoutes);
+
+// Payroll New
+  app.use('/api/payroll-new', payrollNewRoutes);
+
+
+// Audit Logs
+import { auditMiddleware, loginAuditMiddleware } from './middleware/auditMiddleware.js';
+import auditRoutes from './routes/audit-routes.js';
+
+// Add middleware (after auth middleware)
+app.use(loginAuditMiddleware);
+app.use(auditMiddleware);
+
+// Add routes
+app.use('/api/audit', auditRoutes);
+
+
 // ------------------- Start Server -------------------
 app.listen(PORT, () => {
   console.log(`🚀 Server is running at: http://localhost:${PORT}`);
 });
+
+

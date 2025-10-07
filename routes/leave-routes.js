@@ -55,7 +55,7 @@ router.put('/bulk/update/:userId', protect, restrictTo('manager', 'hr', 'admin',
  * Get Cancelled Leaves for Company
  */
 router.get('/company/:companyId/cancelled', protect, getCancelledLeavesForCompany);
-
+4
 /**
  * Manager-specific view (leaves from their department employees)
  */
